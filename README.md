@@ -40,9 +40,8 @@ See [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) for the phased build plan
 
 ## Licence
 
-[Business Source License 1.1](./LICENSE). Non-commercial use is permitted; converting to
-Apache License 2.0 on 2030-07-20. BUSL is a source-available licence, not an OSI-approved
-open source licence.
+[Business Source License 1.1](./LICENSE). Non-commercial use is permitted; converts to
+Apache License 2.0 on 2030-07-20.
 
 For commercial licensing, contact TeleCrypt.io.
 
