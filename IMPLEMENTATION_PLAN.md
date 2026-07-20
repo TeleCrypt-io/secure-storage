@@ -198,6 +198,51 @@ immediately — it arrives via sync. Use the `waitFor` helper from Phase 0. Neve
 From Phase 2 onward, file bytes must be encrypted before upload. If a test writes plaintext
 to the server it is wrong, even if it passes.
 
+### TRAP 6: `getVersionHistory()` only searches the in-memory timeline
+Verified in the v41 source: `MSC3089Branch.getVersionHistory()` walks
+`room.getLiveTimeline().getEvents()` — only events currently loaded in memory. On a **fresh
+client**, or once old events have paginated out, version history comes back **silently
+incomplete** (no error, just missing versions). Every new version also writes two persistent
+state events, so room state grows with each version and each file.
+
+Consequence for Phase 4: do not test versioning only on the same client that created the
+versions (its timeline is warm and the bug hides). Test that a **fresh** client for the same
+user, after joining/syncing, recovers the *full* version chain. If it cannot, that is the bug —
+document it in `BLOCKERS.md`; you may need to force a timeline back-pagination before calling
+`getVersionHistory()`.
+
+---
+
+## 3B. Decisions the human owner must make before you start
+
+These came out of a design review. They affect architecture, so they are settled by the
+project owner, **not** by you. If any is still unanswered when you reach it, stop and put it in
+`BLOCKERS.md` — do not pick a default.
+
+1. **Maximum file size for v1.** Matrix caps uploads at `max_upload_size` (the test server is
+   set to 100 MB). There is no chunking or resume in `m.file` or MSC3089. So v1 is limited to
+   single-shot files under that cap. **Assume "documents and photos, ≤100 MB" unless told
+   otherwise.** Multi-GB "Nextcloud-like" files require a chunking layer that is explicitly out
+   of scope here — do not attempt it.
+
+2. **Quota enforcement location — do not build quotas yet.** This server is stock Synapse with
+   no custom enforcement module. Anything enforced only in this client library is trivially
+   bypassed (a user can call Synapse directly with their own token). Real enforcement must live
+   server-side (Synapse config or a module) and is **not designed yet**. Do not add
+   client-side quota logic and call it enforcement — leave it out and note it.
+
+3. **External share links (Phase 6) are NOT in your scope** — see §10. They need a separate
+   design (a proxy with its own Synapse credentials, a token store, and a decision about
+   serving the encrypted blob with the key in the URL fragment). Do not build them.
+
+## 3C. Library API must cover tree discovery
+
+A user's folders are Matrix rooms. Across a fresh session there is no magic index — the library
+must be able to **enumerate the caller's file trees** by listing their joined rooms and
+filtering for the MSC3089 tree marker. Your `SecureStorage` API (Phase 1) must expose something
+like `listTrees(): MSC3089TreeSpace[]`. Add a Phase 1 test that a *fresh* client for the same
+user can find a tree created in an earlier session.
+
 ---
 
 ## 4. Phase 0 — Test harness
@@ -221,12 +266,13 @@ Create `package.json`:
     "lint": "eslint src test --ext .ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "synapse:up": "docker compose -f docker/docker-compose.test.yml up -d --wait",
-    "synapse:down": "docker compose -f docker/docker-compose.test.yml down -v"
+    "synapse:up": "./throwaway_synapse/up.sh",
+    "synapse:fresh": "./throwaway_synapse/up.sh --fresh",
+    "synapse:down": "./throwaway_synapse/down.sh"
   },
   "dependencies": {
-    "matrix-js-sdk": "^41.9.0",
-    "matrix-encrypt-attachment": "^1.0.3"
+    "matrix-js-sdk": "41.9.0",
+    "matrix-encrypt-attachment": "1.0.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -262,71 +308,42 @@ Create `tsconfig.json`:
 
 Run `npm install`. **Verify:** it completes with no errors.
 
-### Step 0.2 — Disposable Synapse
+### Step 0.2 — Disposable Synapse (already built — just run it)
 
-Create `docker/docker-compose.test.yml`:
+**This is done for you.** The `throwaway_synapse/` directory already contains a working,
+verified single-container Synapse launched via **podman** (not docker). Do not rebuild it.
 
-```yaml
-services:
-  synapse:
-    image: ghcr.io/element-hq/synapse:latest
-    environment:
-      SYNAPSE_SERVER_NAME: localhost
-      SYNAPSE_REPORT_STATS: "no"
-      SYNAPSE_ENABLE_REGISTRATION: "yes"
-    volumes:
-      - ./synapse-data:/data
-    ports:
-      - "8008:8008"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
-      interval: 2s
-      timeout: 5s
-      retries: 30
+```
+throwaway_synapse/
+  up.sh                    # generate config on first run, then start; --fresh wipes and regenerates
+  down.sh                  # stop + remove container; --wipe also deletes ./data
+  homeserver.extra.yaml    # test overrides: open registration + all rate limits disabled + 100M uploads
+  data/                    # generated config, db, media (gitignored, owned by the container UID)
 ```
 
-Generate the config once:
+Run it via the npm scripts (they call the shell scripts above):
 
 ```bash
-docker run --rm -v "$PWD/docker/synapse-data:/data" \
-  -e SYNAPSE_SERVER_NAME=localhost -e SYNAPSE_REPORT_STATS=no \
-  ghcr.io/element-hq/synapse:latest generate
+npm run synapse:up      # start (reuses ./data if present — fast)
+npm run synapse:fresh   # wipe everything and regenerate from scratch
+npm run synapse:down    # stop and remove the container
 ```
 
-Then append this to `docker/synapse-data/homeserver.yaml`:
+**Verified working:** after `npm run synapse:up`,
+`curl http://localhost:8008/_matrix/client/versions` returns JSON with `"versions"`, and a
+`POST /_matrix/client/v3/register` with `auth: { type: "m.login.dummy" }` successfully creates
+users (proving open registration and disabled rate limits are in effect).
 
-```yaml
-enable_registration: true
-enable_registration_without_verification: true
-
-rc_message:
-  per_second: 1000
-  burst_count: 1000
-rc_registration:
-  per_second: 1000
-  burst_count: 1000
-rc_login:
-  address:
-    per_second: 1000
-    burst_count: 1000
-  account:
-    per_second: 1000
-    burst_count: 1000
-rc_joins:
-  local:
-    per_second: 1000
-    burst_count: 1000
-rc_invites:
-  per_room:
-    per_second: 1000
-    burst_count: 1000
-  per_user:
-    per_second: 1000
-    burst_count: 1000
-```
-
-**Verify:** `npm run synapse:up` then
-`curl http://localhost:8008/_matrix/client/versions` returns JSON containing `"versions"`.
+Notes that will save you time:
+- **Rootless podman maps `data/` to the container's UID.** The host cannot edit or `rm` those
+  files directly — that is why `up.sh`/`down.sh` do config-append and wipe *inside* a container
+  (`podman unshare`). If you touch `data/` by hand you will hit "Permission denied"; use the
+  scripts.
+- The server name is `localhost` and it listens on `:8008`. Do not change these — the harness
+  hardcodes them.
+- There is **no MAS** in this test server — it uses Synapse's built-in registration/login.
+  Production uses MAS; see §14 for why the suite must also run against production-like infra
+  before launch.
 
 ### Step 0.3 — User provisioning helper
 
@@ -425,6 +442,8 @@ Write `test/functional/tree.test.ts` covering:
 | 1.6 | `getDirectory(roomId)` returns the right folder; unknown ID returns `undefined` |
 | 1.7 | `getOrder()` / `setOrder()` reorders folders as expected |
 | 1.8 | Creating a folder with an empty name either throws or is handled — assert whichever it does, and document it |
+| 1.9 | `listTrees()` returns the caller's top-level trees (see §3C) |
+| 1.10 | A **fresh** client for the same user (new client object, full sync) can find a tree created earlier via `listTrees()` — proves cross-session discovery |
 
 **Do not proceed to Phase 2 until all Phase 1 tests pass.**
 
@@ -492,6 +511,7 @@ Write `test/functional/versions.test.ts`:
 | 4.3 | An old version's content is still downloadable and decryptable |
 | 4.4 | `listFiles()` shows only the current version; `listAllFiles()` shows all |
 | 4.5 | Renaming a file does not create a new version |
+| 4.6 | **Fresh-client history (see TRAP 6):** create 3 versions, then a *brand-new* client for the same user recovers the full 3-version chain via `getVersionHistory()`. This is the test that catches the in-memory-timeline bug. |
 
 ---
 
@@ -533,12 +553,15 @@ Then report back that Phases 0–5 are complete.
 ## 11. Reference material
 
 - `matrix-js-sdk` source: `node_modules/matrix-js-sdk/src/models/MSC3089TreeSpace.ts` and
-  `MSC3089Branch.ts` — read these when unsure about behaviour.
+  `MSC3089Branch.ts` — read these when unsure about behaviour. This is your primary reference.
 - `matrix-files-sdk` (https://github.com/matrix-org/matrix-files-sdk) — Apache-2.0, an older
   wrapper around the same API. **You may read and copy from it**, keeping its copyright notice.
-  Note it targets an older matrix-js-sdk, so its download path has TRAP 1.
-- `files-sdk-demo` (https://github.com/vector-im/files-sdk-demo) — **AGPL-3.0. Do NOT copy any
-  code from this repository.** You may read it to understand behaviour, nothing more.
+  It is a complete worked example of every operation you need. Note it targets an older
+  matrix-js-sdk, so its download path has TRAP 1.
+- **`files-sdk-demo` — do NOT open it.** It is AGPL-3.0, incompatible with this project's
+  licence. `matrix-files-sdk` (Apache-2.0, above) covers everything you need as a code
+  reference, so there is no reason to read the AGPL demo at all. Staying out of it entirely
+  removes any risk of copied structure. Do not clone, browse, or paste from it.
 
 ## 12. Licensing rule
 
@@ -546,3 +569,49 @@ This project ships under **BUSL 1.1** (see `LICENSE`). Do not add any dependency
 under GPL, AGPL, or any other copyleft licence. Permissive licences (MIT, Apache-2.0, BSD,
 ISC) are fine. If unsure about a dependency's licence, do not add it — note it in
 `BLOCKERS.md` instead.
+
+## 13. Cross-cutting requirements (apply to every phase)
+
+**Pin dependencies exactly.** `matrix-js-sdk` is pinned to an exact version (`41.9.0`, no `^`)
+because the MSC3089 API uses `unstable*` names that can move between minor releases. Do not
+loosen the pin. Keep all MSC3089 calls behind your own `SecureStorage` interface so that a
+future SDK bump breaks in one file, not across the codebase.
+
+**Keep storage and crypto pluggable.** `matrix-js-sdk` is browser-first: its Rust crypto is
+WASM and its default store is IndexedDB. Do not hardcode browser globals in the library. Take
+the store/crypto-store as a constructor dependency so the same library can run in Node (for the
+test suite and any future headless use). The test harness supplies a Node-compatible store; a
+browser UI would supply IndexedDB.
+
+**CI cost — do not mock the server.** The value of this suite is that it runs against a real
+Synapse; mocking the tree/crypto layer would hide exactly the bugs the traps warn about. To
+keep CI affordable: start the throwaway Synapse **once per test run** (not per test), cache the
+podman image, and stage CI — run the full suite on merge-to-main and a faster subset on push.
+Never make a failing integration test pass by replacing Synapse with a mock.
+
+## 14. Not covered here: staging against production-like infra
+
+This suite runs against the throwaway Synapse, which is **stock Synapse with built-in auth and
+no S3**. Production is different in ways that can break things this suite will never catch:
+MAS-based auth, an S3 media backend, authenticated-media enforcement, and real upload limits.
+
+Two production risks to flag for the owner (not your job to fix, but note them in `STATUS.md`):
+- **Media retention / S3 lifecycle.** Synapse does not purge local media by default, but an S3
+  bucket lifecycle rule could silently delete stored files that Synapse still references —
+  catastrophic for a storage product. The deployment must verify both the Synapse
+  `media_retention` config and the S3 bucket's lifecycle policy.
+- **A staging run against a production-like Synapse (MAS + S3)** is required before launch. It
+  is out of scope for you, but STATUS.md should state that it has not been done.
+
+## 15. Anti-circularity note for the tests
+
+You are writing both the implementation and the tests, so a wrong assumption can end up encoded
+in both and still go green. Guard against this by preferring assertions against **server-side
+ground truth that an independent client can see**, not against your own library's return
+values. The strongest tests in this plan are exactly those:
+- 2.7 — fetch the *raw* stored bytes and prove they are not the plaintext
+- 3.8 — an independent second client cannot decrypt content added after removal
+- 4.6 — a fresh client recovers the full version history
+
+When you add tests, bias toward that shape: check what Synapse actually stored and what a
+*different* client actually sees, not just what your code returned.

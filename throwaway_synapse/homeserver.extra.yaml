@@ -1,0 +1,32 @@
+# Appended to the generated homeserver.yaml by up.sh.
+# THROWAWAY TEST CONFIG ONLY — never use these settings on a real server.
+#
+# Purpose: open registration (no email/captcha) and effectively disable every
+# rate limiter, so a functional test suite can create users and hammer the server
+# without hitting M_LIMIT_EXCEEDED (see TRAP 2 in IMPLEMENTATION_PLAN.md).
+
+enable_registration: true
+enable_registration_without_verification: true
+
+# Media: allow large-ish uploads for file tests. Local media is not purged by
+# default (no media_retention lifetimes set), which is what we want for a storage
+# product — silent media deletion would corrupt every test.
+max_upload_size: 100M
+
+rc_message:
+  per_second: 1000
+  burst_count: 1000
+rc_registration:
+  per_second: 1000
+  burst_count: 1000
+rc_login:
+  address: { per_second: 1000, burst_count: 1000 }
+  account: { per_second: 1000, burst_count: 1000 }
+  failed_attempts: { per_second: 1000, burst_count: 1000 }
+rc_joins:
+  local: { per_second: 1000, burst_count: 1000 }
+  remote: { per_second: 1000, burst_count: 1000 }
+rc_invites:
+  per_room: { per_second: 1000, burst_count: 1000 }
+  per_user: { per_second: 1000, burst_count: 1000 }
+rc_3pid_validation: { per_second: 1000, burst_count: 1000 }
