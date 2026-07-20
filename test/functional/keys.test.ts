@@ -2,8 +2,6 @@ import { describe, it, expect } from "vitest";
 import { createClient } from "matrix-js-sdk";
 import { registerTestUser } from "../harness/users";
 import { createTestClient, stopTestClient } from "../harness/clients";
-import { waitFor } from "../harness/waitFor";
-import { SecureStorage } from "../../src/SecureStorage";
 import { decodeRecoveryKey } from "matrix-js-sdk/src/crypto-api/recovery-key";
 
 describe("key management", () => {

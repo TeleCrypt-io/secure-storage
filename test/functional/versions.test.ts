@@ -1,3 +1,11 @@
+// 4.6 needs a *persistent* crypto store so that a fresh MatrixClient instance
+// (same user/device, but restarted) still has its megolm sessions available —
+// otherwise it can never decrypt anything it didn't just receive live, no matter
+// how much timeline pagination happens. Node has no native IndexedDB, so we
+// polyfill it for this file only (other test files are unaffected: vitest
+// isolates each test file's globals, and every other call site keeps passing
+// useIndexedDB: false explicitly).
+import "fake-indexeddb/auto";
 import { describe, it, expect } from "vitest";
 import { registerTestUser } from "../harness/users";
 import { createTestClient, stopTestClient } from "../harness/clients";
@@ -14,7 +22,7 @@ describe("versioning", () => {
       await waitFor(() => tree.room.name === "VersionTest");
 
       const data = new TextEncoder().encode("v1 content").buffer as ArrayBuffer;
-      const eventId = await storage.uploadFile(tree, "doc.txt", data, "text/plain");
+      const _eventId = await storage.uploadFile(tree, "doc.txt", data, "text/plain");
 
       // Wait for the file to appear
       const files = await waitFor(
@@ -94,7 +102,7 @@ describe("versioning", () => {
 
       const v2Branch = tree.listFiles().find((f) => f.id === v2Id)!;
       const history = await v2Branch.getVersionHistory();
-      expect(history.length).toBeGreaterThanOrEqual(2);
+      expect(history.length).toBe(2);
       // The first in the list should be the latest version
       expect(history[0].version).toBeGreaterThanOrEqual(history[history.length - 1]?.version ?? 0);
     } finally {
@@ -246,7 +254,10 @@ describe("versioning", () => {
 
   it("4.6 fresh client recovers full version chain", async () => {
     const user = await registerTestUser("ver");
-    const clientA = await createTestClient(user);
+    // Persistent crypto store: a real client persists megolm sessions across
+    // restarts. Without this, clientB below would be crypto-amnesiac (same
+    // device, empty store) and could never decrypt anything.
+    const clientA = await createTestClient(user, { useIndexedDB: true });
     let treeId: string;
     try {
       const storageA = new SecureStorage(clientA);
@@ -300,8 +311,9 @@ describe("versioning", () => {
       stopTestClient(clientA);
     }
 
-    // Fresh client, same user
-    const clientB = await createTestClient(user);
+    // Fresh client, same user — reconnects using the same persistent crypto store
+    // clientA wrote to, so it should inherit the megolm sessions it needs.
+    const clientB = await createTestClient(user, { useIndexedDB: true });
     try {
       const storageB = new SecureStorage(clientB);
       const trees = await waitFor(
@@ -325,8 +337,16 @@ describe("versioning", () => {
       // Get version history from the active branch
       const history = await bFiles[0].getVersionHistory();
 
-      // We should have at least some version history
-      expect(history.length).toBeGreaterThanOrEqual(1);
+      // A fresh client (independent sync from scratch) must recover the FULL
+      // chain of 3 versions, newest first. See BLOCKERS.md: even with a
+      // persistent crypto store (see useIndexedDB: true above), this is
+      // observed to be FLAKY (roughly 1-in-10 runs recovers only 2 of 3
+      // versions) due to how matrix-js-sdk's rust crypto backend persists
+      // (or fails to persist in time) the sender's own outbound-session
+      // ratchet state used to locally re-decrypt its own past messages.
+      // Left failing/flaky intentionally per instructions — not weakened.
+      expect(history.length).toBe(3);
+      expect(history.map((v) => v.version)).toEqual([3, 2, 1]);
     } finally {
       stopTestClient(clientB);
     }

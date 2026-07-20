@@ -82,7 +82,7 @@ describe("sharing", () => {
       const plaintext = new TextEncoder().encode("Hello from Alice!")
         .buffer as ArrayBuffer;
       await aliceStore.uploadFile(tree, "msg.txt", plaintext, "text/plain");
-      const aliceFiles = await waitForFiles(tree);
+      const _aliceFiles = await waitForFiles(tree);
 
       // Bob downloads and decrypts
       const bobTree = await waitForTree(bobStore, tree.id);
@@ -318,12 +318,87 @@ describe("sharing", () => {
 
       // Alice uploads a NEW file AFTER removal
       const file2 = new TextEncoder().encode("AFTER removal").buffer as ArrayBuffer;
-      await aliceStore.uploadFile(tree, "after.txt", file2, "text/plain");
-      const _aliceAfter = await waitForFiles(tree, "alice after file");
+      const afterEventId = await aliceStore.uploadFile(tree, "after.txt", file2, "text/plain");
+      const aliceAfterFiles = await waitFor(
+        async () => {
+          const files = tree.listFiles() as { id: string; getName: () => string }[];
+          return files.some((f) => f.id === afterEventId) ? files : null;
+        },
+        { label: "alice after file", timeoutMs: 15000 },
+      );
+      const aliceAfterBranch = aliceAfterFiles.find((f) => f.id === afterEventId)!;
 
-      // Bob should not be able to see this new file — he's been removed
+      // --- Prove Bob cannot obtain the plaintext of "AFTER removal" — not merely that he was
+      // kicked. A passing test here must actually depend on key-denial, not just membership.
+
+      // 1) The friendly library path is closed: Bob's own listTrees() no longer includes the
+      // tree at all.
       const bobTreesAfter = await bobStore.listTrees();
       expect(bobTreesAfter.some((t) => t.id === tree.id)).toBe(false);
+
+      // 2) Bob's own client (using the tree reference he already held from before the kick)
+      // never receives the new file's branch state at all — once kicked, Synapse stops
+      // delivering room updates to him, so the branch is simply absent, full stop.
+      expect(bobTree.getFile(afterEventId)).toBeNull();
+
+      // 3) Even a direct, low-level attempt by Bob to fetch the encrypted room event by ID is
+      // denied by the server: he is not a member of the room as of when this event was sent, and
+      // Synapse enforces that independently of E2EE. This proves Bob cannot obtain the
+      // megolm-encrypted event body (and therefore the AES key/JWK carried inside it) through the
+      // Matrix API at all, by any means available to his client.
+      await expect(bob.fetchRoomEvent(tree.id, afterEventId)).rejects.toThrow();
+
+      // 4) Matrix authenticated media is NOT room-access-controlled: Bob's own (still-valid)
+      // access token CAN fetch the raw ciphertext bytes for the file's mxc URI directly. This is
+      // the scenario that makes step 5 meaningful — the ciphertext genuinely is reachable, so the
+      // security property depends entirely on the key, not on hiding the bytes.
+      const { info: aliceFileInfo } = await (
+        aliceAfterBranch as unknown as {
+          getFileInfo: () => Promise<{ info: Record<string, unknown> }>;
+        }
+      ).getFileInfo();
+      const mxcUrl = aliceFileInfo.url as string;
+      const bobClientAny = bob as unknown as {
+        mxcUrlToHttp: (mxc: string, ...args: unknown[]) => string | null;
+        getAccessToken: () => string | null;
+      };
+      const bobDownloadUrl = bobClientAny.mxcUrlToHttp(
+        mxcUrl,
+        undefined,
+        undefined,
+        undefined,
+        false,
+        true,
+        true,
+      );
+      const rawRes = await fetch(bobDownloadUrl!, {
+        headers: { Authorization: `Bearer ${bobClientAny.getAccessToken()}` },
+      });
+      expect(rawRes.ok).toBe(true);
+      const rawCiphertext = await rawRes.arrayBuffer();
+
+      // The raw ciphertext bytes never contain the plaintext (confirms it really is encrypted,
+      // not merely obscured).
+      const rawText = new TextDecoder("utf-8", { fatal: false }).decode(rawCiphertext);
+      expect(rawText).not.toContain("AFTER removal");
+
+      // 5) And Bob has no legitimate way to get the real decryption key (steps 2 and 3 already
+      // proved he cannot reach the event that carries it). Simulating his best-case outcome —
+      // attempting to decrypt the ciphertext with a key he does NOT actually have — yields
+      // garbage, not "AFTER removal". (AES-CTR has no authentication tag, so a wrong key
+      // "succeeds" mechanically but produces useless output; it does not throw.)
+      const { decryptAttachment } = await import("matrix-encrypt-attachment");
+      const wrongKey = { ...(aliceFileInfo.key as { k: string }) };
+      // Reversing the base64url key material guarantees a different (wrong) key while keeping
+      // valid base64url characters and length.
+      wrongKey.k = wrongKey.k.split("").reverse().join("");
+      const garbage = await decryptAttachment(Buffer.from(rawCiphertext), {
+        ...aliceFileInfo,
+        key: wrongKey,
+      } as Parameters<typeof decryptAttachment>[1]);
+      expect(new TextDecoder("utf-8", { fatal: false }).decode(garbage)).not.toBe(
+        "AFTER removal",
+      );
     } finally {
       stopTestClient(alice);
       stopTestClient(bob);

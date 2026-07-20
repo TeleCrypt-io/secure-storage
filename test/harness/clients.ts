@@ -1,7 +1,10 @@
 import { createClient, MatrixClient } from "matrix-js-sdk";
 import { TestUser } from "./users";
 
-export async function createTestClient(user: TestUser): Promise<MatrixClient> {
+export async function createTestClient(
+  user: TestUser,
+  opts: { useIndexedDB?: boolean } = {},
+): Promise<MatrixClient> {
   const client = createClient({
     baseUrl: "http://localhost:8008",
     userId: user.userId,
@@ -9,7 +12,7 @@ export async function createTestClient(user: TestUser): Promise<MatrixClient> {
     deviceId: user.deviceId,
   });
 
-  await client.initRustCrypto({ useIndexedDB: false });
+  await client.initRustCrypto({ useIndexedDB: opts.useIndexedDB ?? false });
   await client.startClient({ initialSyncLimit: 10 });
 
   await new Promise<void>((resolve, reject) => {
