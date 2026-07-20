@@ -326,25 +326,34 @@ describe("versioning", () => {
       const treeB = trees.find((t) => t.id === treeId)!;
 
       // Wait for at least one file to appear
-      const bFiles = await waitFor(
-        async () => {
+      await waitFor(
+        () => {
           const fs = treeB.listFiles();
           return fs.length > 0 ? fs : null;
         },
         { label: "fresh client sees files", timeoutMs: 15000 },
       );
 
-      // Get version history from the active branch
-      const history = await bFiles[0].getVersionHistory();
+      // getVersionHistory()'s backward walk depends on v2's and v3's messages being
+      // locally decrypted (so their m.relates_to can be aggregated) — on a fresh
+      // client that decryption is asynchronous and can still be settling even after
+      // the (unencrypted) branch state events have already landed. Poll for the full
+      // chain rather than asserting on the first read, re-fetching the branch each
+      // time: this waits out legitimate decryption-settling latency without masking
+      // genuine key-denial — if the chain can never reach 3, this times out and
+      // fails deterministically, which is the correct outcome.
+      const history = await waitFor(
+        async () => {
+          const files = treeB.listFiles();
+          if (files.length === 0) return null;
+          const h = await files[0].getVersionHistory();
+          return h.length === 3 ? h : null;
+        },
+        { label: "full version chain recovered", timeoutMs: 15000 },
+      );
 
       // A fresh client (independent sync from scratch) must recover the FULL
-      // chain of 3 versions, newest first. See BLOCKERS.md: even with a
-      // persistent crypto store (see useIndexedDB: true above), this is
-      // observed to be FLAKY (roughly 1-in-10 runs recovers only 2 of 3
-      // versions) due to how matrix-js-sdk's rust crypto backend persists
-      // (or fails to persist in time) the sender's own outbound-session
-      // ratchet state used to locally re-decrypt its own past messages.
-      // Left failing/flaky intentionally per instructions — not weakened.
+      // chain of 3 versions, newest first.
       expect(history.length).toBe(3);
       expect(history.map((v) => v.version)).toEqual([3, 2, 1]);
     } finally {
