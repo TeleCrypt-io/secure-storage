@@ -249,6 +249,21 @@ user can find a tree created in an earlier session.
 
 **Goal:** a working test harness against a real, disposable Synapse. No library code yet.
 
+**Two things to understand before you start:**
+
+- **The Synapse must be running before you run tests.** `npm test` does *not* start it. Always
+  `npm run synapse:up` first. The clean-state command is
+  `npm run synapse:down && npm run synapse:up && npm test`. It is left **off by default** — the
+  owner does not keep it running between sessions.
+- **No test users are pre-created, and you must not add any.** Every test registers its own
+  users at runtime via `registerTestUser` (Step 0.3), each with a random suffix, so runs never
+  collide and never depend on leftover state. Do not seed fixture users into the server.
+
+**Preflight guard (required).** Add a Vitest `globalSetup` file that, before any test runs,
+checks `GET http://localhost:8008/_matrix/client/versions` and — if it is unreachable — fails
+immediately with a clear message: `Synapse not reachable at :8008 — run 'npm run synapse:up'
+first`. This turns a cryptic connection-refused into an obvious instruction.
+
 ### Step 0.1 — Project setup
 
 Create `package.json`:
