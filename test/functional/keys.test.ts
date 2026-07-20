@@ -1,150 +1,257 @@
+// Layer 2 (server-side Secure Backup + restore) needs a persistent crypto store
+// so that a genuinely new device's *own* crypto state survives its own restart,
+// and so bootstrapped secrets/backup state are written where matrix-js-sdk
+// expects to find them. Node has no native IndexedDB, so we polyfill it for
+// this file only (vitest isolates each test file's globals).
+import "fake-indexeddb/auto";
 import { describe, it, expect } from "vitest";
-import { createClient } from "matrix-js-sdk";
-import { registerTestUser } from "../harness/users";
-import { createTestClient, stopTestClient } from "../harness/clients";
 import { decodeRecoveryKey } from "matrix-js-sdk/src/crypto-api/recovery-key";
+import { registerTestUser, loginNewDevice } from "../harness/users";
+import { stopTestClient } from "../harness/clients";
+import { waitFor } from "../harness/waitFor";
+import { SecureStorage } from "../../src/SecureStorage";
+
+const BASE_URL = "http://localhost:8008";
+
+async function createStorage(user: {
+  userId: string;
+  accessToken: string;
+  deviceId: string;
+}): Promise<SecureStorage> {
+  return SecureStorage.create({
+    baseUrl: BASE_URL,
+    userId: user.userId,
+    accessToken: user.accessToken,
+    deviceId: user.deviceId,
+  });
+}
+
+/** Polls the raw server-side key backup endpoint until it reports at least
+ * one stored key. This is the authoritative proof that the background backup
+ * engine has actually finished uploading — `getActiveSessionBackupVersion()`
+ * only proves the engine believes a backup is active, not that any given
+ * session has reached the server yet. */
+async function waitForServerBackupCount(
+  accessToken: string,
+  minCount: number,
+): Promise<number> {
+  return waitFor(
+    async () => {
+      const res = await fetch(`${BASE_URL}/_matrix/client/v3/room_keys/version`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) return null;
+      const info = (await res.json()) as { count?: number };
+      return (info.count ?? 0) >= minCount ? info.count! : null;
+    },
+    { label: `server backup count >= ${minCount}`, timeoutMs: 20000 },
+  );
+}
 
 describe("key management", () => {
-  it("5.1 bootstrapCrossSigning completes for a fresh user", async () => {
+  it("5.1 setupRecovery bootstraps cross-signing + secret storage + key backup", async () => {
     const user = await registerTestUser("key");
-    const client = await createTestClient(user);
+    const storage = await createStorage(user);
     try {
-      const crypto = client.getCrypto()!;
-      await crypto.bootstrapCrossSigning({
-        authUploadDeviceSigningKeys: async () => true,
-      });
+      const { recoveryKey } = await storage.keys.setupRecovery();
+      expect(recoveryKey).toBeTruthy();
+      expect(typeof recoveryKey).toBe("string");
 
-      const status = await crypto.getCrossSigningStatus();
-      expect(status.privateKeysInSecretStorage).toBe(false);
+      // The returned key must be a genuine, well-formed recovery key.
+      const decoded = decodeRecoveryKey(recoveryKey);
+      expect(decoded.byteLength).toBe(32);
+
+      await waitFor(() => storage.keys.isRecoverySetup(), {
+        label: "recovery active after setupRecovery",
+        timeoutMs: 15000,
+      });
     } finally {
-      stopTestClient(client);
+      stopTestClient(storage.getClient());
     }
   });
 
-  it("5.2 bootstrapSecretStorage produces a recovery key", async () => {
+  it("5.2 isRecoverySetup reflects state before and after setupRecovery", async () => {
     const user = await registerTestUser("key");
+    const storage = await createStorage(user);
+    try {
+      expect(await storage.keys.isRecoverySetup()).toBe(false);
 
-    let cachedPrivateKey: Uint8Array;
+      await storage.keys.setupRecovery();
 
-    const client = createClient({
-      baseUrl: "http://localhost:8008",
-      userId: user.userId,
-      accessToken: user.accessToken,
-      deviceId: user.deviceId,
-      cryptoCallbacks: {
-        getSecretStorageKey: async ({ keys }) => {
-          const keyId = Object.keys(keys)[0];
-          return [keyId, cachedPrivateKey];
+      const ready = await waitFor(() => storage.keys.isRecoverySetup(), {
+        label: "isRecoverySetup() becomes true",
+        timeoutMs: 15000,
+      });
+      expect(ready).toBe(true);
+    } finally {
+      stopTestClient(storage.getClient());
+    }
+  });
+
+  it("5.3 a genuinely new device recovers files via the Recovery Key", async () => {
+    const userA = await registerTestUser("recover");
+    const storageA = await createStorage(userA);
+    try {
+      const tree = await storageA.createTree("RecoveryTest");
+      await waitFor(() => tree.room.name === "RecoveryTest", {
+        label: "tree name visible",
+      });
+
+      const plaintext = new TextEncoder().encode(
+        "lost laptop recovery test content",
+      ).buffer as ArrayBuffer;
+      await storageA.uploadFile(tree, "important.txt", plaintext, "text/plain");
+
+      await waitFor(
+        () => {
+          const fs = tree.listFiles();
+          return fs.length > 0 ? fs : null;
         },
-        cacheSecretStorageKey: async () => {},
-      },
-    });
-    await client.initRustCrypto({ useIndexedDB: false });
-    await client.startClient({ initialSyncLimit: 10 });
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("sync timeout")), 15000);
-      client.once("sync", (state: string) => {
-        clearTimeout(timeout);
-        if (state === "PREPARED" || state === "SYNCING") resolve();
-        else reject(new Error(`unexpected sync state: ${state}`));
+        { label: "file visible on device A", timeoutMs: 15000 },
+      );
+
+      const { recoveryKey } = await storageA.keys.setupRecovery();
+      expect(recoveryKey).toBeTruthy();
+
+      // Backup engine believes it is active...
+      await waitFor(() => storageA.keys.isRecoverySetup(), {
+        label: "backup active on device A",
+        timeoutMs: 15000,
       });
-    });
+      // ...AND the file's room key has actually reached the server (the
+      // upload is asynchronous background work, separate from "active").
+      await waitForServerBackupCount(userA.accessToken, 1);
 
-    try {
-      const crypto = client.getCrypto()!;
-      await crypto.bootstrapCrossSigning({
-        authUploadDeviceSigningKeys: async () => true,
-      });
+      // Device B: a genuine second device for the same user — new device_id,
+      // new access_token, empty crypto store (verified via the negative
+      // control below).
+      const userB = await loginNewDevice(userA);
+      const storageB = await createStorage(userB);
+      try {
+        const treesB = await waitFor(
+          async () => {
+            const ts = await storageB.listTrees();
+            return ts.length > 0 ? ts : null;
+          },
+          { label: "device B lists trees", timeoutMs: 15000 },
+        );
+        const treeB = treesB.find((t) => t.id === tree.id);
+        expect(treeB).toBeDefined();
 
-      const generatedKey = await crypto.createRecoveryKeyFromPassphrase();
-      expect(generatedKey.encodedPrivateKey).toBeTruthy();
-      expect(typeof generatedKey.encodedPrivateKey).toBe("string");
+        const filesB = await waitFor(
+          () => {
+            const fs = treeB!.listFiles();
+            return fs.length > 0 ? fs : null;
+          },
+          { label: "device B sees the file", timeoutMs: 15000 },
+        );
 
-      cachedPrivateKey = generatedKey.privateKey;
+        // NEGATIVE CONTROL: device B has no keys yet, so it must NOT be able
+        // to decrypt. This proves the empty start — if this assertion fails,
+        // device B's crypto store is leaking from device A's, and the later
+        // "success" would be meaningless.
+        await expect(storageB.downloadFile(filesB[0])).rejects.toThrow();
 
-      await crypto.bootstrapSecretStorage({
-        createSecretStorageKey: async () => generatedKey,
-        setupNewSecretStorage: true,
-      });
+        const restoreResult = await storageB.keys.restoreFromRecoveryKey(recoveryKey);
+        expect(restoreResult.imported).toBeGreaterThan(0);
+        expect(restoreResult.imported).toBeLessThanOrEqual(restoreResult.total);
 
-      const status = await crypto.getSecretStorageStatus();
-      expect(status.ready).toBe(true);
+        // Decryption settling can take a moment after the keys land locally —
+        // poll real decrypt success, not the clock.
+        const downloaded = await waitFor(
+          async () => {
+            try {
+              return await storageB.downloadFile(filesB[0]);
+            } catch {
+              return null;
+            }
+          },
+          { label: "device B decrypts the file after restore", timeoutMs: 15000 },
+        );
+
+        expect(new Uint8Array(downloaded.data)).toEqual(new Uint8Array(plaintext));
+        expect(downloaded.mimetype).toBe("text/plain");
+      } finally {
+        stopTestClient(storageB.getClient());
+      }
     } finally {
-      stopTestClient(client);
+      stopTestClient(storageA.getClient());
     }
   });
 
-  it("5.3 recovery key can be decoded", async () => {
-    const user = await registerTestUser("key");
-    const client = await createTestClient(user);
+  it("5.4 restoreFromRecoveryKey fails cleanly with a wrong Recovery Key", async () => {
+    const userA = await registerTestUser("recoverbad");
+    const storageA = await createStorage(userA);
     try {
-      const crypto = client.getCrypto()!;
-      await crypto.bootstrapCrossSigning({
-        authUploadDeviceSigningKeys: async () => true,
+      const tree = await storageA.createTree("BadRecoveryTest");
+      await waitFor(() => tree.room.name === "BadRecoveryTest", {
+        label: "tree name visible",
       });
 
-      const generatedKey = await crypto.createRecoveryKeyFromPassphrase();
-      expect(generatedKey.encodedPrivateKey).toBeTruthy();
-
-      // Decode the recovery key and verify it produces 32 bytes
-      const privateKey = decodeRecoveryKey(generatedKey.encodedPrivateKey!);
-      expect(privateKey.byteLength).toBe(32);
-    } finally {
-      stopTestClient(client);
-    }
-  });
-
-  it("5.4 cross-signing + secret storage bootstrap succeeds end-to-end", async () => {
-    const user = await registerTestUser("key");
-
-    let cachedPrivateKey: Uint8Array;
-
-    const client = createClient({
-      baseUrl: "http://localhost:8008",
-      userId: user.userId,
-      accessToken: user.accessToken,
-      deviceId: user.deviceId,
-      cryptoCallbacks: {
-        getSecretStorageKey: async ({ keys }) => {
-          const keyId = Object.keys(keys)[0];
-          return [keyId, cachedPrivateKey];
+      const plaintext = new TextEncoder().encode("must stay unrecoverable")
+        .buffer as ArrayBuffer;
+      await storageA.uploadFile(tree, "secret.txt", plaintext, "text/plain");
+      await waitFor(
+        () => {
+          const fs = tree.listFiles();
+          return fs.length > 0 ? fs : null;
         },
-        cacheSecretStorageKey: async () => {},
-      },
-    });
-    await client.initRustCrypto({ useIndexedDB: false });
-    await client.startClient({ initialSyncLimit: 10 });
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("sync timeout")), 15000);
-      client.once("sync", (state: string) => {
-        clearTimeout(timeout);
-        if (state === "PREPARED" || state === "SYNCING") resolve();
-        else reject(new Error(`unexpected sync state: ${state}`));
+        { label: "file visible on device A", timeoutMs: 15000 },
+      );
+
+      await storageA.keys.setupRecovery();
+      await waitFor(() => storageA.keys.isRecoverySetup(), {
+        label: "backup active on device A",
+        timeoutMs: 15000,
       });
-    });
+      await waitForServerBackupCount(userA.accessToken, 1);
 
-    try {
-      const crypto = client.getCrypto()!;
-      await crypto.bootstrapCrossSigning({
-        authUploadDeviceSigningKeys: async () => true,
-      });
+      // A well-formed but cryptographically wrong recovery key: a genuine
+      // recovery key generated for an unrelated account. Decodes cleanly, but
+      // must not unlock userA's secret storage / key backup.
+      const throwawayUser = await registerTestUser("throwaway");
+      const throwawayStorage = await createStorage(throwawayUser);
+      const { recoveryKey: wrongKey } = await throwawayStorage.keys.setupRecovery();
+      stopTestClient(throwawayStorage.getClient());
 
-      const generatedKey = await crypto.createRecoveryKeyFromPassphrase();
-      cachedPrivateKey = generatedKey.privateKey;
+      const userB = await loginNewDevice(userA);
+      const storageB = await createStorage(userB);
+      try {
+        const treesB = await waitFor(
+          async () => {
+            const ts = await storageB.listTrees();
+            return ts.length > 0 ? ts : null;
+          },
+          { label: "device B lists trees", timeoutMs: 15000 },
+        );
+        const treeB = treesB.find((t) => t.id === tree.id);
+        expect(treeB).toBeDefined();
 
-      await crypto.bootstrapSecretStorage({
-        createSecretStorageKey: async () => generatedKey,
-        setupNewSecretStorage: true,
-      });
+        const filesB = await waitFor(
+          () => {
+            const fs = treeB!.listFiles();
+            return fs.length > 0 ? fs : null;
+          },
+          { label: "device B sees the file", timeoutMs: 15000 },
+        );
 
-      const status = await crypto.getSecretStorageStatus();
-      expect(status.ready).toBe(true);
+        // Garbage input: fails at decode, before ever touching the network.
+        await expect(
+          storageB.keys.restoreFromRecoveryKey("not a real recovery key"),
+        ).rejects.toThrow();
 
-      // After bootstrap, cross-signing private keys should be in secret storage
-      const csStatus = await crypto.getCrossSigningStatus();
-      expect(csStatus.privateKeysInSecretStorage).toBe(true);
+        // Well-formed but wrong key: must fail cleanly, not silently "succeed".
+        await expect(
+          storageB.keys.restoreFromRecoveryKey(wrongKey),
+        ).rejects.toThrow();
+
+        // Device B still cannot decrypt the file — no partial/silent success.
+        await expect(storageB.downloadFile(filesB[0])).rejects.toThrow();
+      } finally {
+        stopTestClient(storageB.getClient());
+      }
     } finally {
-      stopTestClient(client);
+      stopTestClient(storageA.getClient());
     }
   });
 });
