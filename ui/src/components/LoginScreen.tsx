@@ -6,7 +6,11 @@ const DEFAULT_HOMESERVER = "http://localhost:8008";
 export function LoginScreen() {
   const { login, register, loginWithOidc, error, status } = useStorage();
   const [mode, setMode] = useState<"login" | "register">("login");
-  const [homeserver, setHomeserver] = useState(DEFAULT_HOMESERVER);
+
+  // Lock homeserver to production value if configured, otherwise use default
+  const lockedHomeserver =
+    import.meta.env.VITE_HOMESERVER ?? (import.meta.env.PROD ? "https://telecrypt.io" : undefined);
+  const [homeserver, setHomeserver] = useState(lockedHomeserver || DEFAULT_HOMESERVER);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
 
@@ -29,14 +33,16 @@ export function LoginScreen() {
     <div className="centered">
       <form className="panel" onSubmit={handleSubmit}>
         <h1>TeleCrypt.io Storage</h1>
-        <label>
-          Homeserver
-          <input
-            value={homeserver}
-            onChange={(e) => setHomeserver(e.target.value)}
-            data-testid="homeserver"
-          />
-        </label>
+        {!lockedHomeserver && (
+          <label>
+            Homeserver
+            <input
+              value={homeserver}
+              onChange={(e) => setHomeserver(e.target.value)}
+              data-testid="homeserver"
+            />
+          </label>
+        )}
         <label>
           Username
           <input
