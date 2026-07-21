@@ -1,0 +1,84 @@
+import { test, expect } from "@playwright/test";
+import { registerE2eUser, waitForServerBackupCount } from "./testUsers";
+import { createFolder, downloadFileBytes, loginViaUI, openFolderByName, uploadFile } from "./uiHelpers";
+
+// Mirrors test/functional/keys.test.ts 5.3 ("a genuinely new device recovers
+// files via the Recovery Key") through the UI: set up recovery, capture the
+// shown key, then a FRESH browser context (= fresh IndexedDB crypto store,
+// fresh device_id/access_token via a real password login) restores with
+// that key and reads the file. Includes the same negative control: before
+// restoring, the new device must NOT be able to decrypt.
+test("recovery: set up on device A, restore and read a file on a fresh device B", async ({
+  browser,
+}) => {
+  const user = await registerE2eUser("e2e_recover");
+
+  const contextA = await browser.newContext();
+  const pageA = await contextA.newPage();
+
+  const original = Buffer.from("lost laptop recovery test content, via the UI\n".repeat(10));
+
+  try {
+    await loginViaUI(pageA, user);
+    await createFolder(pageA, "RecoveryTest");
+    await openFolderByName(pageA, "RecoveryTest");
+    await uploadFile(pageA, "important.txt", "text/plain", original);
+
+    await pageA.getByTestId("nav-recovery").click();
+    await pageA.getByTestId("setup-recovery").click();
+    const recoveryKey = await pageA
+      .getByTestId("recovery-key-value")
+      .textContent({ timeout: 20000 });
+    expect(recoveryKey).toBeTruthy();
+
+    // Server-side proof the backup engine actually finished uploading the
+    // file's room key, not just that the engine believes it's active — read
+    // the access token straight out of this session's localStorage.
+    const accessToken = await pageA.evaluate(() => {
+      const raw = localStorage.getItem("telecrypt-io-ui:session");
+      return raw ? (JSON.parse(raw) as { accessToken: string }).accessToken : null;
+    });
+    expect(accessToken).toBeTruthy();
+    await waitForServerBackupCount(accessToken!, 1);
+
+    // Device B: a genuinely fresh browser context (empty IndexedDB) logging
+    // in with the SAME account credentials via a real password login — a
+    // brand-new device_id/access_token from Synapse, exactly the "new
+    // laptop" scenario.
+    const contextB = await browser.newContext();
+    const pageB = await contextB.newPage();
+    try {
+      await loginViaUI(pageB, user);
+      await openFolderByName(pageB, "RecoveryTest");
+      await expect(
+        pageB.locator('[data-testid="file-item"]', { hasText: "important.txt" }),
+      ).toBeVisible({ timeout: 20000 });
+
+      // NEGATIVE CONTROL: device B has no keys yet, so download must fail
+      // cleanly — proves the empty start, so the later success is meaningful.
+      await pageB.locator('[data-testid="file-item"]', { hasText: "important.txt" })
+        .getByTestId("download-file")
+        .click();
+      await expect(pageB.getByTestId("folder-detail-error")).toBeVisible({ timeout: 10000 });
+
+      // Restore from the captured Recovery Key.
+      await pageB.getByTestId("nav-recovery").click();
+      await pageB.getByTestId("restore-key-input").fill(recoveryKey!.trim());
+      await pageB.getByTestId("restore-submit").click();
+      await expect(pageB.getByTestId("restore-result")).toBeVisible({ timeout: 20000 });
+      const resultText = await pageB.getByTestId("restore-result").textContent();
+      expect(resultText).toMatch(/Imported [1-9]\d* of \d+ keys/);
+
+      // Now the file must decrypt (poll — decryption settling after a
+      // restore is real async work, not instant).
+      await pageB.getByTestId("nav-folders").click();
+      await openFolderByName(pageB, "RecoveryTest");
+      const downloaded = await downloadFileBytes(pageB, "important.txt");
+      expect(downloaded.equals(original)).toBe(true);
+    } finally {
+      await contextB.close();
+    }
+  } finally {
+    await contextA.close();
+  }
+});

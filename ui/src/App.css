@@ -1,0 +1,113 @@
+.centered {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  gap: 12px;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 420px;
+}
+
+.panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid currentColor;
+}
+
+.topbar .user {
+  font-weight: 600;
+}
+
+.topbar nav {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+}
+
+.topbar nav button {
+  padding: 6px 10px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+}
+
+.topbar nav button.active {
+  font-weight: 600;
+  opacity: 1;
+}
+
+.topbar nav button:not(.active) {
+  opacity: 0.6;
+}
+
+.inline-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0;
+}
+
+.inline-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.85em;
+}
+
+ul[data-testid="folder-list"],
+ul[data-testid="file-list"],
+ul[data-testid="member-list"] {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+ul[data-testid="folder-list"] li,
+ul[data-testid="file-list"] li,
+ul[data-testid="member-list"] li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid currentColor;
+  border-bottom-color: color-mix(in srgb, currentColor 15%, transparent);
+}
+
+section {
+  margin-top: 20px;
+}
+
+.warning {
+  border: 1px solid #d9822b;
+  background: color-mix(in srgb, #d9822b 12%, transparent);
+  border-radius: 6px;
+  padding: 12px;
+  text-align: left;
+}
+
+.warning code {
+  display: block;
+  word-break: break-all;
+  margin: 8px 0;
+  padding: 8px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border-radius: 4px;
+}
