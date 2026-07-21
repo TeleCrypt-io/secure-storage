@@ -9,6 +9,14 @@ export interface Session {
   userId: string;
   deviceId: string;
   accessToken: string;
+  /**
+   * Present only when logged in via OIDC/MAS (authorization-code + PKCE —
+   * see src/lib/oidcAuth.ts and docs/OAUTH_SPEC.md Part D). Absent for a
+   * plain password login.
+   */
+  refreshToken?: string;
+  oidcIssuer?: string;
+  oidcClientId?: string;
 }
 
 const STORAGE_KEY = "telecrypt-io-ui:session";

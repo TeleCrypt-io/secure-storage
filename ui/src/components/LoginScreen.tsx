@@ -4,7 +4,7 @@ import { useStorage } from "../context/StorageContext";
 const DEFAULT_HOMESERVER = "http://localhost:8008";
 
 export function LoginScreen() {
-  const { login, register, error, status } = useStorage();
+  const { login, register, loginWithOidc, error, status } = useStorage();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [homeserver, setHomeserver] = useState(DEFAULT_HOMESERVER);
   const [username, setUsername] = useState("");
@@ -19,6 +19,10 @@ export function LoginScreen() {
     } else {
       await register(homeserver, username, password);
     }
+  }
+
+  async function handleOidc() {
+    await loginWithOidc(homeserver);
   }
 
   return (
@@ -66,6 +70,9 @@ export function LoginScreen() {
           onClick={() => setMode(mode === "login" ? "register" : "login")}
         >
           {mode === "login" ? "Need an account? Register (dev)" : "Have an account? Log in"}
+        </button>
+        <button type="button" disabled={busy} onClick={handleOidc} data-testid="oidc-login">
+          Log in with MAS/OIDC
         </button>
       </form>
     </div>

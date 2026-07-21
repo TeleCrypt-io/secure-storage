@@ -7,8 +7,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { TeleCryptIOStorage } from "../lib/core";
+import { TeleCryptIOStorage, discoverOidcIssuer, buildTokenRefreshFunction } from "../lib/core";
 import { loginWithPassword, registerAccount } from "../lib/auth";
+import { beginOidcLogin, completeOidcLoginFromCallback, isOidcCallback } from "../lib/oidcAuth";
 import { clearSession, loadSession, saveSession, type Session } from "../lib/session";
 
 export type ConnectionStatus = "signed-out" | "connecting" | "ready" | "error";
@@ -20,6 +21,10 @@ interface StorageContextValue {
   error: string | null;
   login: (homeserver: string, username: string, password: string) => Promise<void>;
   register: (homeserver: string, username: string, password: string) => Promise<void>;
+  /** Starts the OIDC/MAS login redirect — does not return on success
+   * (navigates away). Sets `status`/`error` if discovery/DCR fail before
+   * the redirect. */
+  loginWithOidc: (homeserver: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -41,12 +46,44 @@ export function StorageProvider({ children }: { children: ReactNode }) {
     setStatus("connecting");
     setError(null);
     try {
-      const client = await TeleCryptIOStorage.create({
-        baseUrl: s.homeserver,
-        userId: s.userId,
-        accessToken: s.accessToken,
-        deviceId: s.deviceId,
-      });
+      let client: TeleCryptIOStorage;
+      if (s.refreshToken && s.oidcIssuer && s.oidcClientId) {
+        // Re-discover the issuer's token_endpoint — cheap and safe in a
+        // real browser (unlike the CLI under Node, see
+        // src/cli/oidcWindowPolyfill.ts, the UI never needs a `window`
+        // shim: it already has a real one).
+        const authMetadata = await discoverOidcIssuer(s.homeserver);
+        const tokenRefreshFunction = buildTokenRefreshFunction(
+          authMetadata.token_endpoint,
+          s.oidcClientId,
+          async (tokens) => {
+            // Persists a refreshed access/refresh token straight back to
+            // localStorage, so a page reload (or another tab) picks up the
+            // refreshed token rather than the one this session started
+            // with — same pattern as the CLI's session.json.
+            saveSession({
+              ...s,
+              accessToken: tokens.accessToken,
+              refreshToken: tokens.refreshToken ?? s.refreshToken,
+            });
+          },
+        );
+        client = await TeleCryptIOStorage.createFromOidc({
+          baseUrl: s.homeserver,
+          userId: s.userId,
+          accessToken: s.accessToken,
+          deviceId: s.deviceId,
+          refreshToken: s.refreshToken,
+          tokenRefreshFunction,
+        });
+      } else {
+        client = await TeleCryptIOStorage.create({
+          baseUrl: s.homeserver,
+          userId: s.userId,
+          accessToken: s.accessToken,
+          deviceId: s.deviceId,
+        });
+      }
       setStorage(client);
       setSession(s);
       setStatus("ready");
@@ -57,6 +94,23 @@ export function StorageProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (isOidcCallback()) {
+      setStatus("connecting");
+      setError(null);
+      completeOidcLoginFromCallback()
+        .then((s) => {
+          saveSession(s);
+          return connect(s);
+        })
+        .catch((err) => {
+          setError((err as Error).message);
+          setStatus("error");
+        });
+      // Intentionally run once on mount only; login()/register()/
+      // loginWithOidc() drive subsequent connections explicitly.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      return;
+    }
     const existing = loadSession();
     if (existing) {
       void connect(existing);
@@ -98,6 +152,17 @@ export function StorageProvider({ children }: { children: ReactNode }) {
     [connect],
   );
 
+  const loginWithOidc = useCallback(async (homeserver: string) => {
+    setStatus("connecting");
+    setError(null);
+    try {
+      await beginOidcLogin(homeserver); // navigates away on success
+    } catch (err) {
+      setError((err as Error).message);
+      setStatus("error");
+    }
+  }, []);
+
   const logout = useCallback(() => {
     storage?.getClient().stopClient();
     clearSession();
@@ -109,7 +174,9 @@ export function StorageProvider({ children }: { children: ReactNode }) {
   }, [storage]);
 
   return (
-    <StorageContext.Provider value={{ status, session, storage, error, login, register, logout }}>
+    <StorageContext.Provider
+      value={{ status, session, storage, error, login, register, loginWithOidc, logout }}
+    >
       {children}
     </StorageContext.Provider>
   );

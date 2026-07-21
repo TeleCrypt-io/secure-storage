@@ -1,10 +1,21 @@
 /**
- * Registers real Synapse accounts for E2E tests the exact same way
- * test/harness/users.ts does for the library's own functional tests (same
- * endpoint, same m.login.dummy shape) — kept as a thin, UI-suite-local copy
- * rather than a cross-package import so ui/ has no reach-through dependency
- * on the root test/ tree's module resolution.
+ * Registers real accounts for E2E tests the exact same way
+ * test/harness/users.ts does for the library's own functional tests — kept
+ * as a thin, UI-suite-local copy rather than a cross-package import so ui/
+ * has no reach-through dependency on the root test/ tree's module resolution.
+ *
+ * The throwaway stack's Synapse delegates auth to a local MAS (MSC3861,
+ * compatibility mode — see throwaway_synapse/up.sh and docs/DECISIONS.md D6),
+ * so plain `POST /_matrix/client/v3/register` is refused ("Registration has
+ * been disabled") — account creation goes through `mas-cli manage
+ * register-user` (shelled out via `podman exec`, same as the root harness).
+ * Password login below is unchanged.
  */
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
 export interface E2eUser {
   userId: string;
   localpart: string;
@@ -15,26 +26,75 @@ function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 8);
 }
 
+async function registerUserInMas(username: string, password: string): Promise<void> {
+  try {
+    await execFileAsync("podman", [
+      "exec",
+      "throwaway-mas",
+      "mas-cli",
+      "manage",
+      "register-user",
+      username,
+      "--password",
+      password,
+      "--yes",
+      "--ignore-password-complexity",
+      "-c",
+      "/data/config.yaml",
+    ]);
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string; message: string };
+    throw new Error(
+      `mas-cli register-user failed for "${username}": ${e.stderr || e.stdout || e.message}`,
+    );
+  }
+}
+
+/**
+ * MAS provisions the corresponding Synapse-side user account
+ * *asynchronously* (a background job) after `mas-cli manage register-user`
+ * returns — see the matching, fuller comment in test/harness/users.ts. A
+ * login attempted before that job runs can transiently 500; retrying
+ * specifically on 500 polls the real condition rather than guessing a fixed
+ * delay. Any other status fails fast, not retried.
+ */
+async function loginWithRetry(
+  username: string,
+  password: string,
+  attempts = 20,
+  delayMs = 300,
+): Promise<{ user_id: string }> {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const res = await fetch("http://localhost:8008/_matrix/client/v3/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "m.login.password",
+        identifier: { type: "m.id.user", user: username },
+        password,
+      }),
+    });
+    if (res.ok) {
+      return (await res.json()) as { user_id: string };
+    }
+    const body = await res.text();
+    if (res.status !== 500 || attempt === attempts) {
+      throw new Error(`login (after MAS registration) failed (${res.status}): ${body}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  throw new Error("loginWithRetry: exhausted attempts");
+}
+
 export async function registerE2eUser(prefix: string): Promise<E2eUser> {
   const suffix = randomSuffix();
-  const localpart = `${prefix}_${suffix}`;
+  // MAS enforces the Matrix user ID grammar strictly (lowercase localpart) —
+  // see the matching comment in test/harness/users.ts.
+  const localpart = `${prefix}_${suffix}`.toLowerCase();
   const password = `pwd_${suffix}`;
 
-  const res = await fetch("http://localhost:8008/_matrix/client/v3/register", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      username: localpart,
-      password,
-      auth: { type: "m.login.dummy" },
-      inhibit_login: true,
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`registration failed (${res.status}): ${body}`);
-  }
-  const data = (await res.json()) as { user_id: string };
+  await registerUserInMas(localpart, password);
+  const data = await loginWithRetry(localpart, password);
   return { userId: data.user_id, localpart, password };
 }
 
