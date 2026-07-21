@@ -12,4 +12,15 @@ export default defineConfig({
   define: {
     global: "globalThis",
   },
+  resolve: {
+    // The UI imports the parent library source (../src/*), which resolves
+    // matrix-js-sdk from the ROOT node_modules, while the UI's own imports
+    // resolve it from ui/node_modules. Without dedupe, Vite bundles BOTH copies
+    // and matrix-js-sdk's "single entrypoint" guard throws at runtime
+    // ("Multiple matrix-js-sdk entrypoints detected!"), rendering a blank page.
+    // This only surfaces in the production build, not the dev server — so the
+    // Playwright E2E (which runs against `vite` dev) never caught it. Force a
+    // single copy of these packages.
+    dedupe: ["matrix-js-sdk", "matrix-encrypt-attachment", "oidc-client-ts"],
+  },
 });
