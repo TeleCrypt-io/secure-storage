@@ -28,9 +28,14 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: "ui/package-lock.json"
 
-      - name: Install dependencies
+      # The ui build imports the parent library source (../src/*.ts), which
+      # depends on the ROOT node_modules (matrix-js-sdk, oidc-client-ts, …).
+      # Install both the root and ui dependency trees before building.
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install UI dependencies
         run: cd ui && npm ci
 
       - name: Build
