@@ -14,6 +14,11 @@ import { clearSession, loadSession, saveSession, type Session } from "../lib/ses
 
 export type ConnectionStatus = "signed-out" | "connecting" | "ready" | "error";
 
+export interface ConnectLogEntry {
+  at: number;
+  message: string;
+}
+
 /** First-time WASM + IndexedDB init on GitHub Pages can take 30–60s. */
 const UI_INIT_TIMEOUT_MS = 90_000;
 const UI_SYNC_TIMEOUT_MS = 45_000;
@@ -25,6 +30,8 @@ interface StorageContextValue {
   session: Session | null;
   storage: TeleCryptIOStorage | null;
   error: string | null;
+  /** Live status lines while connecting (empty when not connecting). */
+  connectLog: ConnectLogEntry[];
   login: (homeserver: string, username: string, password: string) => Promise<void>;
   register: (homeserver: string, username: string, password: string) => Promise<void>;
   /** Starts the OIDC/MAS login redirect — does not return on success
@@ -32,7 +39,6 @@ interface StorageContextValue {
    * the redirect. */
   loginWithOidc: (homeserver: string) => Promise<void>;
   logout: () => void;
-  retryConnect: () => void;
 }
 
 const StorageContext = createContext<StorageContextValue | null>(null);
@@ -51,100 +57,135 @@ export function StorageProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [storage, setStorage] = useState<TeleCryptIOStorage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [connectLog, setConnectLog] = useState<ConnectLogEntry[]>([]);
   // Dedupes concurrent connect() calls for the same access token and guards
   // against building a second MatrixClient from a re-render racing auto-connect.
   const connectInflightRef = useRef<{ token: string; promise: Promise<void> } | null>(null);
   const connectGenRef = useRef(0);
+  const connectStartedAtRef = useRef<number | null>(null);
 
-  const connect = useCallback(async (s: Session) => {
-    const inflight = connectInflightRef.current;
-    if (inflight?.token === s.accessToken) {
-      return inflight.promise;
-    }
-
-    const gen = ++connectGenRef.current;
-
-    const run = (async () => {
-      setStatus("connecting");
-      setError(null);
-      try {
-        const bootstrapOpts = {
-          syncTimeoutMs: UI_SYNC_TIMEOUT_MS,
-          initTimeoutMs: UI_INIT_TIMEOUT_MS,
-        };
-        let client: TeleCryptIOStorage;
-        if (s.refreshToken && s.oidcIssuer && s.oidcClientId) {
-          const authMetadata = await discoverOidcIssuer(s.homeserver);
-          const tokenRefreshFunction = buildTokenRefreshFunction(
-            authMetadata.token_endpoint,
-            s.oidcClientId,
-            async (tokens) => {
-              saveSession({
-                ...s,
-                accessToken: tokens.accessToken,
-                refreshToken: tokens.refreshToken ?? s.refreshToken,
-              });
-            },
-          );
-          client = await TeleCryptIOStorage.createFromOidc({
-            baseUrl: s.homeserver,
-            userId: s.userId,
-            accessToken: s.accessToken,
-            deviceId: s.deviceId,
-            refreshToken: s.refreshToken,
-            tokenRefreshFunction,
-            ...bootstrapOpts,
-          });
-        } else {
-          client = await TeleCryptIOStorage.create({
-            baseUrl: s.homeserver,
-            userId: s.userId,
-            accessToken: s.accessToken,
-            deviceId: s.deviceId,
-            ...bootstrapOpts,
-          });
-        }
-        if (gen !== connectGenRef.current) {
-          client.getClient().stopClient();
-          return;
-        }
-        setStorage(client);
-        setSession(s);
-        setStatus("ready");
-      } catch (err) {
-        if (gen !== connectGenRef.current) return;
-        setError((err as Error).message);
-        setStatus("error");
-      }
-    })();
-
-    const timed = withTimeout(run, UI_CONNECT_TIMEOUT_MS, "Connection").catch((err) => {
-      if (gen !== connectGenRef.current) return;
-      setError((err as Error).message);
-      setStatus("error");
-    });
-
-    connectInflightRef.current = { token: s.accessToken, promise: timed };
-    try {
-      await timed;
-    } finally {
-      if (connectInflightRef.current?.promise === timed) {
-        connectInflightRef.current = null;
-      }
-    }
+  const appendLog = useCallback((message: string) => {
+    setConnectLog((prev) => [...prev, { at: Date.now(), message }]);
   }, []);
+
+  const beginConnecting = useCallback((firstMessage: string) => {
+    connectStartedAtRef.current = Date.now();
+    setStatus("connecting");
+    setError(null);
+    setConnectLog([{ at: Date.now(), message: firstMessage }]);
+  }, []);
+
+  const connect = useCallback(
+    async (s: Session) => {
+      const inflight = connectInflightRef.current;
+      if (inflight?.token === s.accessToken) {
+        return inflight.promise;
+      }
+
+      const gen = ++connectGenRef.current;
+
+      const run = (async () => {
+        // Keep an existing log (e.g. OIDC callback / password login already
+        // started connecting) instead of wiping it when connect() runs.
+        if (connectStartedAtRef.current == null) {
+          beginConnecting(`Restoring session for ${s.userId}…`);
+        } else {
+          appendLog(`Opening encrypted session for ${s.userId}…`);
+        }
+        try {
+          const bootstrapOpts = {
+            syncTimeoutMs: UI_SYNC_TIMEOUT_MS,
+            initTimeoutMs: UI_INIT_TIMEOUT_MS,
+            onProgress: (message: string) => {
+              if (gen === connectGenRef.current) appendLog(message);
+            },
+          };
+          let client: TeleCryptIOStorage;
+          if (s.refreshToken && s.oidcIssuer && s.oidcClientId) {
+            appendLog("Discovering authentication server…");
+            const authMetadata = await discoverOidcIssuer(s.homeserver);
+            appendLog(`Auth issuer: ${authMetadata.issuer}`);
+            const tokenRefreshFunction = buildTokenRefreshFunction(
+              authMetadata.token_endpoint,
+              s.oidcClientId,
+              async (tokens) => {
+                saveSession({
+                  ...s,
+                  accessToken: tokens.accessToken,
+                  refreshToken: tokens.refreshToken ?? s.refreshToken,
+                });
+              },
+            );
+            appendLog("Building encrypted client (OIDC session)…");
+            client = await TeleCryptIOStorage.createFromOidc({
+              baseUrl: s.homeserver,
+              userId: s.userId,
+              accessToken: s.accessToken,
+              deviceId: s.deviceId,
+              refreshToken: s.refreshToken,
+              tokenRefreshFunction,
+              ...bootstrapOpts,
+            });
+          } else {
+            appendLog("Building encrypted client…");
+            client = await TeleCryptIOStorage.create({
+              baseUrl: s.homeserver,
+              userId: s.userId,
+              accessToken: s.accessToken,
+              deviceId: s.deviceId,
+              ...bootstrapOpts,
+            });
+          }
+          if (gen !== connectGenRef.current) {
+            client.getClient().stopClient();
+            return;
+          }
+          appendLog("Connected.");
+          setStorage(client);
+          setSession(s);
+          setStatus("ready");
+        } catch (err) {
+          if (gen !== connectGenRef.current) return;
+          const msg = (err as Error).message;
+          appendLog(`Failed: ${msg}`);
+          setError(msg);
+          setStatus("error");
+        }
+      })();
+
+      const timed = withTimeout(run, UI_CONNECT_TIMEOUT_MS, "Connection").catch((err) => {
+        if (gen !== connectGenRef.current) return;
+        const msg = (err as Error).message;
+        appendLog(`Failed: ${msg}`);
+        setError(msg);
+        setStatus("error");
+      });
+
+      connectInflightRef.current = { token: s.accessToken, promise: timed };
+      try {
+        await timed;
+      } finally {
+        if (connectInflightRef.current?.promise === timed) {
+          connectInflightRef.current = null;
+        }
+      }
+    },
+    [appendLog, beginConnecting],
+  );
 
   useEffect(() => {
     if (isOidcCallback()) {
-      setStatus("connecting");
-      setError(null);
+      beginConnecting("Completing sign-in…");
       completeOidcLoginFromCallback()
         .then((s) => {
+          appendLog(`Signed in as ${s.userId}`);
           saveSession(s);
           return connect(s);
         })
         .catch((err) => {
-          setError((err as Error).message);
+          const msg = (err as Error).message;
+          appendLog(`Failed: ${msg}`);
+          setError(msg);
           setStatus("error");
         });
       // Intentionally run once on mount only; login()/register()/
@@ -163,69 +204,67 @@ export function StorageProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(
     async (homeserver: string, username: string, password: string) => {
-      setStatus("connecting");
-      setError(null);
+      beginConnecting("Signing in…");
       try {
         const s = await loginWithPassword(homeserver, username, password);
+        appendLog(`Signed in as ${s.userId}`);
         saveSession(s);
         await connect(s);
       } catch (err) {
-        setError((err as Error).message);
+        const msg = (err as Error).message;
+        appendLog(`Failed: ${msg}`);
+        setError(msg);
         setStatus("error");
       }
     },
-    [connect],
+    [appendLog, beginConnecting, connect],
   );
 
   const register = useCallback(
     async (homeserver: string, username: string, password: string) => {
-      setStatus("connecting");
-      setError(null);
+      beginConnecting("Creating account…");
       try {
         const s = await registerAccount(homeserver, username, password);
+        appendLog(`Account ready: ${s.userId}`);
         saveSession(s);
         await connect(s);
       } catch (err) {
-        setError((err as Error).message);
+        const msg = (err as Error).message;
+        appendLog(`Failed: ${msg}`);
+        setError(msg);
         setStatus("error");
       }
     },
-    [connect],
+    [appendLog, beginConnecting, connect],
   );
 
-  const loginWithOidc = useCallback(async (homeserver: string) => {
-    setStatus("connecting");
-    setError(null);
-    try {
-      await beginOidcLogin(homeserver); // navigates away on success
-    } catch (err) {
-      setError((err as Error).message);
-      setStatus("error");
-    }
-  }, []);
+  const loginWithOidc = useCallback(
+    async (homeserver: string) => {
+      beginConnecting("Redirecting to sign-in…");
+      try {
+        await beginOidcLogin(homeserver); // navigates away on success
+      } catch (err) {
+        const msg = (err as Error).message;
+        appendLog(`Failed: ${msg}`);
+        setError(msg);
+        setStatus("error");
+      }
+    },
+    [appendLog, beginConnecting],
+  );
 
   const logout = useCallback(() => {
     connectGenRef.current += 1;
     storage?.getClient().stopClient();
     clearSession();
     connectInflightRef.current = null;
+    connectStartedAtRef.current = null;
     setStorage(null);
     setSession(null);
+    setConnectLog([]);
     setStatus("signed-out");
     setError(null);
   }, [storage]);
-
-  const retryConnect = useCallback(() => {
-    const existing = loadSession();
-    if (!existing) {
-      clearSession();
-      setStatus("signed-out");
-      setError(null);
-      return;
-    }
-    setError(null);
-    void connect(existing);
-  }, [connect]);
 
   return (
     <StorageContext.Provider
@@ -234,11 +273,11 @@ export function StorageProvider({ children }: { children: ReactNode }) {
         session,
         storage,
         error,
+        connectLog,
         login,
         register,
         loginWithOidc,
         logout,
-        retryConnect,
       }}
     >
       {children}

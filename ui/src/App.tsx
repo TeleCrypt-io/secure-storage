@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./App.css";
 import { StorageProvider, useStorage } from "./context/StorageContext";
 import { LoginScreen } from "./components/LoginScreen";
@@ -7,8 +7,57 @@ import { FileManager } from "./components/FileManager";
 
 type View = "folders" | "recovery";
 
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return m > 0 ? `${m}:${String(rem).padStart(2, "0")}` : `${rem}s`;
+}
+
+function ConnectingScreen() {
+  const { error, connectLog } = useStorage();
+  const [now, setNow] = useState(Date.now());
+  const startedAt = connectLog[0]?.at ?? now;
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <div className="centered connecting-screen">
+      <p data-testid="connecting">Connecting…</p>
+      <p className="muted connecting-hint">
+        First login may take up to a minute while encryption initializes.
+      </p>
+      <p className="muted connecting-elapsed" data-testid="connect-elapsed">
+        Elapsed {formatElapsed(now - startedAt)}
+      </p>
+
+      <ol className="connect-log" data-testid="connect-log" aria-live="polite">
+        {connectLog.map((entry, i) => {
+          const isLatest = i === connectLog.length - 1;
+          const relative = formatElapsed(entry.at - startedAt);
+          return (
+            <li key={`${entry.at}-${i}`} className={isLatest ? "latest" : undefined}>
+              <span className="connect-log-time">{relative}</span>
+              <span className="connect-log-msg">{entry.message}</span>
+            </li>
+          );
+        })}
+      </ol>
+
+      {error && (
+        <p className="error" data-testid="connect-error">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Shell() {
-  const { status, session, error, logout, retryConnect } = useStorage();
+  const { status, session, error, logout } = useStorage();
   const [view, setView] = useState<View>("folders");
 
   if (status === "signed-out" || status === "error") {
@@ -16,27 +65,7 @@ function Shell() {
   }
 
   if (status === "connecting") {
-    return (
-      <div className="centered">
-        <p data-testid="connecting">Connecting…</p>
-        <p className="muted connecting-hint">
-          First login may take up to a minute while encryption initializes.
-        </p>
-        {error && (
-          <p className="error" data-testid="connect-error">
-            {error}
-          </p>
-        )}
-        <div className="connecting-actions">
-          <button type="button" className="btn" onClick={retryConnect} data-testid="connect-retry">
-            Retry
-          </button>
-          <button type="button" className="link" onClick={logout} data-testid="connect-cancel">
-            Log out
-          </button>
-        </div>
-      </div>
-    );
+    return <ConnectingScreen />;
   }
 
   return (
@@ -69,6 +98,11 @@ function Shell() {
         </button>
       </header>
       <main className="app-main">
+        {error && (
+          <p className="error" data-testid="shell-error">
+            {error}
+          </p>
+        )}
         {view === "recovery" && (
           <div className="recovery-wrap">
             <RecoveryPanel />

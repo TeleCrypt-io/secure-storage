@@ -7,16 +7,57 @@
   gap: 12px;
 }
 
+.connecting-screen {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
 .connecting-hint {
   max-width: 420px;
   text-align: center;
   font-size: 0.9rem;
 }
 
-.connecting-actions {
+.connecting-elapsed {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+}
+
+.connect-log {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 12px 14px;
+  width: 100%;
+  max-width: 440px;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.connect-log li {
   display: flex;
-  gap: 12px;
-  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.connect-log li.latest {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.connect-log-time {
+  flex-shrink: 0;
+  min-width: 2.5em;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .panel {
