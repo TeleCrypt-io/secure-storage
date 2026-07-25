@@ -5,6 +5,7 @@ on:
     branches: ["main"]
     paths:
       - "ui/**"
+      - "src/**"
       - ".github/workflows/deploy-ui.yml"
   workflow_dispatch:
 
