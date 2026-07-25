@@ -4,15 +4,9 @@ import { StorageProvider, useStorage } from "./context/StorageContext";
 import { LoginScreen } from "./components/LoginScreen";
 import { RecoveryPanel } from "./components/RecoveryPanel";
 import { FileManager } from "./components/FileManager";
+import { formatElapsed } from "./lib/formatElapsed";
 
 type View = "folders" | "recovery";
-
-function formatElapsed(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  return m > 0 ? `${m}:${String(rem).padStart(2, "0")}` : `${rem}s`;
-}
 
 function ConnectingScreen() {
   const { error, connectLog } = useStorage();

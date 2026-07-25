@@ -13,6 +13,8 @@ export function RecoveryPanel() {
     null,
   );
   const [copied, setCopied] = useState(false);
+  const [confirmedSaved, setConfirmedSaved] = useState(false);
+  const [restoreExpanded, setRestoreExpanded] = useState(false);
 
   const refreshStatus = useCallback(async () => {
     if (!storage) return;
@@ -30,6 +32,8 @@ export function RecoveryPanel() {
   async function handleSetup() {
     setBusy(true);
     setError(null);
+    setConfirmedSaved(false);
+    setCopied(false);
     try {
       const result = await core.setupRecovery(storage!);
       setRecoveryKey(result.recoveryKey);
@@ -68,21 +72,31 @@ export function RecoveryPanel() {
     }
   }
 
+  function dismissKeyDisplay() {
+    setRecoveryKey(null);
+    setConfirmedSaved(false);
+    setCopied(false);
+  }
+
+  const showRestoreSection = !recoveryKey && isSetup !== null;
+
   return (
     <div className="panel">
       <h2>Recovery</h2>
 
+      {isSetup === null && !recoveryKey && (
+        <p className="muted" data-testid="recovery-loading">
+          Checking recovery status…
+        </p>
+      )}
+
       {isSetup === false && !recoveryKey && (
         <div data-testid="recovery-not-setup">
-          <p>Recovery is not set up for this account yet.</p>
+          <p>Recovery is not set up on this device yet.</p>
           <button onClick={handleSetup} disabled={busy} data-testid="setup-recovery">
             {busy ? "Setting up…" : "Set up recovery"}
           </button>
         </div>
-      )}
-
-      {isSetup === true && !recoveryKey && (
-        <p data-testid="recovery-active">Recovery is set up on this account.</p>
       )}
 
       {recoveryKey && (
@@ -92,32 +106,75 @@ export function RecoveryPanel() {
             on a new device — it will not be shown again.
           </p>
           <code data-testid="recovery-key-value">{recoveryKey}</code>
-          <button onClick={copyKey} data-testid="copy-recovery-key">
-            {copied ? "Copied!" : "Copy"}
+          <div className="recovery-key-actions">
+            <button type="button" onClick={copyKey} data-testid="copy-recovery-key">
+              {copied ? "Copied!" : "Copy"}
+            </button>
+          </div>
+          <label className="recovery-confirm-label">
+            <input
+              type="checkbox"
+              checked={confirmedSaved}
+              onChange={(e) => setConfirmedSaved(e.target.checked)}
+              data-testid="confirm-saved-recovery-key"
+            />
+            I've saved my recovery key
+          </label>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!confirmedSaved}
+            onClick={dismissKeyDisplay}
+            data-testid="recovery-setup-done"
+          >
+            Done
           </button>
         </div>
       )}
 
-      <hr />
+      {showRestoreSection && (
+        <section className="restore-section">
+          {isSetup === true && (
+            <p data-testid="recovery-active">Recovery is set up on this account.</p>
+          )}
 
-      <h3>Restore from a Recovery Key</h3>
-      <form onSubmit={handleRestore} className="inline-form">
-        <label>
-          Recovery Key
-          <input
-            value={restoreKeyInput}
-            onChange={(e) => setRestoreKeyInput(e.target.value)}
-            data-testid="restore-key-input"
-          />
-        </label>
-        <button type="submit" disabled={busy || !restoreKeyInput.trim()} data-testid="restore-submit">
-          {busy ? "Restoring…" : "Restore"}
-        </button>
-      </form>
-      {restoreResult && (
-        <p data-testid="restore-result">
-          Imported {restoreResult.imported} of {restoreResult.total} keys.
-        </p>
+          <button
+            type="button"
+            className="link restore-toggle"
+            onClick={() => setRestoreExpanded((v) => !v)}
+            aria-expanded={restoreExpanded}
+            data-testid="restore-expand"
+          >
+            {restoreExpanded ? "Hide restore" : "Restore on this device"}
+          </button>
+
+          {restoreExpanded && (
+            <form onSubmit={handleRestore} className="restore-form">
+              <label htmlFor="restore-key-textarea">Recovery Key</label>
+              <textarea
+                id="restore-key-textarea"
+                rows={4}
+                value={restoreKeyInput}
+                onChange={(e) => setRestoreKeyInput(e.target.value)}
+                data-testid="restore-key-input"
+              />
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={busy || !restoreKeyInput.trim()}
+                data-testid="restore-submit"
+              >
+                {busy ? "Restoring…" : "Restore"}
+              </button>
+            </form>
+          )}
+
+          {restoreResult && (
+            <p data-testid="restore-result">
+              Imported {restoreResult.imported} of {restoreResult.total} keys.
+            </p>
+          )}
+        </section>
       )}
 
       {error && (

@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { registerE2eUser, waitForServerBackupCount } from "./testUsers";
-import { createFolder, downloadFileBytes, loginViaUI, openFolderByName, uploadFile } from "./uiHelpers";
+import { createFolder, downloadFileBytes, loginViaUI, openFolderByName, uploadFile, confirmRecoveryKeySaved, restoreRecoveryKey } from "./uiHelpers";
 
 // Mirrors test/functional/keys.test.ts 5.3 ("a genuinely new device recovers
 // files via the Recovery Key") through the UI: set up recovery, capture the
@@ -11,6 +11,7 @@ import { createFolder, downloadFileBytes, loginViaUI, openFolderByName, uploadFi
 test("recovery: set up on device A, restore and read a file on a fresh device B", async ({
   browser,
 }) => {
+  test.setTimeout(300_000);
   const user = await registerE2eUser("e2e_recover");
 
   const contextA = await browser.newContext();
@@ -30,6 +31,7 @@ test("recovery: set up on device A, restore and read a file on a fresh device B"
       .getByTestId("recovery-key-value")
       .textContent({ timeout: 20000 });
     expect(recoveryKey).toBeTruthy();
+    await confirmRecoveryKeySaved(pageA);
 
     // Server-side proof the backup engine actually finished uploading the
     // file's room key, not just that the engine believes it's active — read
@@ -39,7 +41,7 @@ test("recovery: set up on device A, restore and read a file on a fresh device B"
       return raw ? (JSON.parse(raw) as { accessToken: string }).accessToken : null;
     });
     expect(accessToken).toBeTruthy();
-    await waitForServerBackupCount(accessToken!, 1);
+    await waitForServerBackupCount(accessToken!, 1, 60_000);
 
     // Device B: a genuinely fresh browser context (empty IndexedDB) logging
     // in with the SAME account credentials via a real password login — a
@@ -63,9 +65,7 @@ test("recovery: set up on device A, restore and read a file on a fresh device B"
 
       // Restore from the captured Recovery Key.
       await pageB.getByTestId("nav-recovery").click();
-      await pageB.getByTestId("restore-key-input").fill(recoveryKey!.trim());
-      await pageB.getByTestId("restore-submit").click();
-      await expect(pageB.getByTestId("restore-result")).toBeVisible({ timeout: 20000 });
+      await restoreRecoveryKey(pageB, recoveryKey!);
       const resultText = await pageB.getByTestId("restore-result").textContent();
       expect(resultText).toMatch(/Imported [1-9]\d* of \d+ keys/);
 
@@ -76,9 +76,11 @@ test("recovery: set up on device A, restore and read a file on a fresh device B"
       const downloaded = await downloadFileBytes(pageB, "important.txt");
       expect(downloaded.equals(original)).toBe(true);
     } finally {
+      await pageB.close();
       await contextB.close();
     }
   } finally {
+    await pageA.close();
     await contextA.close();
   }
 });

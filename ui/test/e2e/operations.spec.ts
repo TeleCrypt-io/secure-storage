@@ -31,8 +31,11 @@ test("create subfolder, upload inside, rename and delete subfolder", async ({ pa
   await createFolder(page, "Parent");
   await openFolderByName(page, "Parent");
 
-  await page.getByTestId("new-subfolder-name").fill("Child");
   await page.getByTestId("create-subfolder").click();
+  const renameInput = page.getByTestId("rename-input");
+  await expect(renameInput).toBeVisible({ timeout: 20000 });
+  await renameInput.fill("Child");
+  await renameInput.press("Enter");
   await expect(page.locator('[data-testid="subfolder-item"]', { hasText: "Child" })).toBeVisible({
     timeout: 20000,
   });

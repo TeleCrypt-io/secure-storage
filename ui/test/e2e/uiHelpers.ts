@@ -10,26 +10,32 @@ export async function loginViaUI(page: Page, user: E2eUser): Promise<void> {
   await expect(page.getByTestId("current-user")).toHaveText(user.userId, { timeout: 20000 });
 }
 
-export async function createFolder(page: Page, name: string): Promise<string> {
+export async function createVault(page: Page, name: string): Promise<string> {
   await page.getByTestId("nav-folders").click();
-  await page.getByTestId("create-folder").click();
-  const renameInput = page.getByTestId("rename-folder-input");
+  await page.getByTestId("create-vault").click();
+  const renameInput = page.getByTestId("rename-vault-input");
   await expect(renameInput).toBeVisible({ timeout: 20000 });
   await renameInput.fill(name);
   await renameInput.press("Enter");
-  const item = page.locator('[data-testid="folder-item"]', { hasText: name });
+  const item = page.locator('[data-testid="vault-item"]', { hasText: name });
   await expect(item).toBeVisible({ timeout: 20000 });
   const folderId = await item.getAttribute("data-folder-id");
-  if (!folderId) throw new Error(`folder item for "${name}" has no data-folder-id`);
+  if (!folderId) throw new Error(`vault item for "${name}" has no data-folder-id`);
   return folderId;
 }
 
-export async function openFolderByName(page: Page, name: string): Promise<void> {
+/** @deprecated use createVault */
+export const createFolder = createVault;
+
+export async function openVaultByName(page: Page, name: string): Promise<void> {
   await page.locator(".folder-list-btn", { hasText: name }).click();
   await expect(page.getByTestId("folder-detail")).toBeVisible();
 }
 
-/** userB's side: accept a pending invite for the shared folder. */
+/** @deprecated use openVaultByName */
+export const openFolderByName = openVaultByName;
+
+/** userB's side: accept a pending invite for the shared vault. */
 export async function joinFolder(
   page: Page,
   folderId: string,
@@ -49,7 +55,7 @@ export async function joinFolder(
     await expect(invite).toBeVisible({ timeout: 20000 });
     await invite.getByTestId("accept-invite").click();
   }
-  await expect(page.locator(`[data-testid="folder-item"][data-folder-id="${folderId}"]`)).toBeVisible({
+  await expect(page.locator(`[data-testid="vault-item"][data-folder-id="${folderId}"]`)).toBeVisible({
     timeout: 20000,
   });
 }
@@ -93,4 +99,19 @@ export async function downloadFileBytes(page: Page, name: string): Promise<Buffe
       await page.waitForTimeout(500);
     }
   }
+}
+
+export async function confirmRecoveryKeySaved(page: Page): Promise<void> {
+  await page.getByTestId("copy-recovery-key").click();
+  await page.getByTestId("confirm-saved-recovery-key").check();
+  await page.getByTestId("recovery-setup-done").click();
+  await expect(page.getByTestId("recovery-key-display")).not.toBeVisible({ timeout: 5000 });
+}
+
+export async function restoreRecoveryKey(page: Page, key: string): Promise<void> {
+  await expect(page.getByTestId("restore-expand")).toBeVisible({ timeout: 60_000 });
+  await page.getByTestId("restore-expand").click();
+  await page.getByTestId("restore-key-input").fill(key.trim());
+  await page.getByTestId("restore-submit").click();
+  await expect(page.getByTestId("restore-result")).toBeVisible({ timeout: 120_000 });
 }

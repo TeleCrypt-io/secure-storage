@@ -6,7 +6,7 @@ import { DetailsPanel, type Selection } from "./DetailsPanel";
 import { FolderContents } from "./FolderContents";
 
 const POLL_MS = 2500;
-const UNTITLED = "Untitled folder";
+const UNTITLED = "Untitled vault";
 
 function uniqueUntitledName(existing: FolderInfo[]): string {
   const names = new Set(existing.map((f) => f.name.toLowerCase()));
@@ -82,6 +82,15 @@ export function FileManager({ onOpenRecovery }: { onOpenRecovery?: () => void })
     setSelection(null);
   }
 
+  function handleNavUp() {
+    if (subPath.length > 0) {
+      setSubPath((prev) => prev.slice(0, -1));
+    } else {
+      setRootFolder(null);
+    }
+    setSelection(null);
+  }
+
   function handleFolderRenamed(folderId: string, name: string) {
     if (rootFolder?.id === folderId) {
       setRootFolder({ ...rootFolder, name });
@@ -106,7 +115,7 @@ export function FileManager({ onOpenRecovery }: { onOpenRecovery?: () => void })
     void refreshFolders();
   }
 
-  async function handleNewFolder() {
+  async function handleNewVault() {
     setBusy(true);
     setError(null);
     try {
@@ -172,16 +181,16 @@ export function FileManager({ onOpenRecovery }: { onOpenRecovery?: () => void })
   return (
     <div className="file-manager" data-testid="file-manager">
       <aside className="folder-sidebar">
-        <h2 className="sidebar-title">Folders</h2>
+        <h2 className="sidebar-title">Vaults</h2>
 
         <button
           type="button"
           className="btn btn-primary sidebar-new-folder"
-          onClick={() => void handleNewFolder()}
+          onClick={() => void handleNewVault()}
           disabled={busy}
-          data-testid="create-folder"
+          data-testid="create-vault"
         >
-          New folder
+          New vault
         </button>
 
         {invites != null && invites.length > 0 && (
@@ -231,13 +240,13 @@ export function FileManager({ onOpenRecovery }: { onOpenRecovery?: () => void })
         {folders === null ? (
           <p className="muted">Loading…</p>
         ) : folders.length === 0 ? (
-          <p className="muted" data-testid="no-folders">
-            No folders yet.
+          <p className="muted" data-testid="no-vaults">
+            No vaults yet.
           </p>
         ) : (
-          <ul className="folder-list" data-testid="folder-list">
+          <ul className="folder-list" data-testid="vault-list">
             {folders.map((f) => (
-              <li key={f.id} data-testid="folder-item" data-folder-id={f.id}>
+              <li key={f.id} data-testid="vault-item" data-folder-id={f.id}>
                 {sidebarRenaming?.id === f.id ? (
                   <input
                     className="rename-input sidebar-rename"
@@ -251,7 +260,7 @@ export function FileManager({ onOpenRecovery }: { onOpenRecovery?: () => void })
                       if (e.key === "Enter") void commitSidebarRename();
                       if (e.key === "Escape") setSidebarRenaming(null);
                     }}
-                    data-testid="rename-folder-input"
+                    data-testid="rename-vault-input"
                   />
                 ) : (
                   <button
@@ -279,15 +288,17 @@ export function FileManager({ onOpenRecovery }: { onOpenRecovery?: () => void })
         )}
 
         {!currentFolder ? (
-          <div className="empty-panel muted" data-testid="select-folder-prompt">
-            Select or create a folder to browse files.
+          <div className="empty-panel muted" data-testid="select-vault-prompt">
+            Select or create a vault to browse files.
           </div>
         ) : (
           <FolderContents
             folderId={currentFolder.id}
             folderName={currentFolder.name}
             breadcrumb={[...breadcrumb, ...(subPath.length ? [currentFolder] : [])]}
+            isVaultRoot={subPath.length === 0}
             onNavigate={navigateBreadcrumb}
+            onNavUp={handleNavUp}
             onOpenSubfolder={openSubfolder}
             onFolderRenamed={handleFolderRenamed}
             onFolderDeleted={handleFolderDeleted}

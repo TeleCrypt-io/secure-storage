@@ -5,15 +5,24 @@ import {
   useState,
   type ChangeEvent,
   type DragEvent,
-  type FormEvent,
   type MouseEvent,
 } from "react";
 import { useStorage } from "../context/StorageContext";
 import * as core from "../lib/core";
 import type { FileInfo, FolderInfo, TeleCryptIOStorage } from "../lib/core";
+import { formatOperationError } from "../lib/formatOperationError";
 import type { Selection } from "./DetailsPanel";
 
 const POLL_MS = 2500;
+const UNTITLED_SUBFOLDER = "Untitled folder";
+
+function uniqueUntitledSubfolderName(existing: FolderInfo[]): string {
+  const names = new Set(existing.map((f) => f.name.toLowerCase()));
+  if (!names.has(UNTITLED_SUBFOLDER.toLowerCase())) return UNTITLED_SUBFOLDER;
+  let i = 2;
+  while (names.has(`${UNTITLED_SUBFOLDER} ${i}`.toLowerCase())) i++;
+  return `${UNTITLED_SUBFOLDER} ${i}`;
+}
 
 function FolderIcon() {
   return (
@@ -65,19 +74,23 @@ async function ensurePath(
 
 export function FolderContents({
   folderId,
-  folderName,
+  folderName: _folderName,
   breadcrumb,
+  isVaultRoot,
   onNavigate,
+  onNavUp,
   onOpenSubfolder,
   onFolderRenamed,
-  onFolderDeleted,
+  onFolderDeleted: _onFolderDeleted,
   selection,
   onSelect,
 }: {
   folderId: string;
   folderName: string;
   breadcrumb: FolderInfo[];
+  isVaultRoot: boolean;
   onNavigate: (index: number) => void;
+  onNavUp: () => void;
   onOpenSubfolder: (sub: FolderInfo) => void;
   onFolderRenamed: (folderId: string, name: string) => void;
   onFolderDeleted: (folderId: string) => void;
@@ -93,7 +106,6 @@ export function FolderContents({
   const [renaming, setRenaming] = useState<{ kind: "file" | "folder"; id: string; name: string } | null>(
     null,
   );
-  const [newSubfolderName, setNewSubfolderName] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
@@ -124,7 +136,7 @@ export function FolderContents({
       await core.uploadFile(storage!, targetFolderId, name, bytes, mimetype);
       await refresh();
     } catch (err) {
-      setError((err as Error).message);
+      setError(formatOperationError(err));
     } finally {
       setBusy(false);
     }
@@ -162,7 +174,7 @@ export function FolderContents({
       }
       await refresh();
     } catch (err) {
-      setError((err as Error).message);
+      setError(formatOperationError(err));
     } finally {
       setBusy(false);
       if (folderInputRef.current) folderInputRef.current.value = "";
@@ -196,7 +208,7 @@ export function FolderContents({
       a.remove();
       URL.revokeObjectURL(url);
     } catch (err) {
-      setError((err as Error).message);
+      setError(formatOperationError(err));
     } finally {
       setBusy(false);
     }
@@ -211,7 +223,7 @@ export function FolderContents({
       if (selection?.kind === "file" && selection.id === fileId) onSelect(null);
       await refresh();
     } catch (err) {
-      setError((err as Error).message);
+      setError(formatOperationError(err));
     } finally {
       setBusy(false);
     }
@@ -226,21 +238,8 @@ export function FolderContents({
       if (selection?.id === subId) onSelect(null);
       await refresh();
     } catch (err) {
-      setError((err as Error).message);
+      setError(formatOperationError(err));
     } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleDeleteCurrentFolder() {
-    if (!confirm(`Delete "${folderName}" and everything inside it?`)) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await core.deleteFolder(storage!, folderId);
-      onFolderDeleted(folderId);
-    } catch (err) {
-      setError((err as Error).message);
       setBusy(false);
     }
   }
@@ -263,24 +262,23 @@ export function FolderContents({
       }
       await refresh();
     } catch (err) {
-      setError((err as Error).message);
+      setError(formatOperationError(err));
     } finally {
       setBusy(false);
       setRenaming(null);
     }
   }
 
-  async function handleCreateSubfolder(e: FormEvent) {
-    e.preventDefault();
-    if (!newSubfolderName.trim()) return;
+  async function handleNewSubfolder() {
     setBusy(true);
     setError(null);
     try {
-      await core.createSubfolder(storage!, folderId, newSubfolderName.trim());
-      setNewSubfolderName("");
+      const name = uniqueUntitledSubfolderName(subfolders ?? []);
+      const created = await core.createSubfolder(storage!, folderId, name);
       await refresh();
+      setRenaming({ kind: "folder", id: created.id, name: created.name });
     } catch (err) {
-      setError((err as Error).message);
+      setError(formatOperationError(err));
     } finally {
       setBusy(false);
     }
@@ -306,6 +304,7 @@ export function FolderContents({
 
   const loading = files === null || subfolders === null;
   const empty = !loading && files!.length === 0 && subfolders!.length === 0;
+  const upLabel = isVaultRoot ? "Back to vaults" : "Up";
 
   return (
     <div
@@ -319,41 +318,42 @@ export function FolderContents({
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
     >
-      <nav className="breadcrumb" aria-label="Folder path">
-        {breadcrumb.map((crumb, i) => (
-          <span key={crumb.id}>
-            {i > 0 && <span className="breadcrumb-sep">/</span>}
-            <button
-              type="button"
-              className="link breadcrumb-item"
-              onClick={() => onNavigate(i)}
-              data-testid="breadcrumb-item"
-            >
-              {crumb.name}
-            </button>
-          </span>
-        ))}
-      </nav>
+      <div className="folder-nav-row">
+        <button
+          type="button"
+          className="btn btn-sm nav-up-btn"
+          onClick={onNavUp}
+          data-testid="nav-up"
+        >
+          ↑ {upLabel}
+        </button>
+        <nav className="breadcrumb" aria-label="Folder path">
+          {breadcrumb.map((crumb, i) => (
+            <span key={crumb.id}>
+              {i > 0 && <span className="breadcrumb-sep">/</span>}
+              <button
+                type="button"
+                className="link breadcrumb-item"
+                onClick={() => onNavigate(i)}
+                data-testid="breadcrumb-item"
+              >
+                {crumb.name}
+              </button>
+            </span>
+          ))}
+        </nav>
+      </div>
 
       <div className="toolbar">
         <button
           type="button"
           className="btn btn-primary"
-          onClick={() => fileInputRef.current?.click()}
+          onClick={() => void handleNewSubfolder()}
           disabled={busy}
-          data-testid="upload-button"
+          data-testid="create-subfolder"
         >
-          Upload files
+          New folder
         </button>
-        <input
-          type="file"
-          ref={fileInputRef}
-          onChange={handleUpload}
-          disabled={busy}
-          multiple
-          hidden
-          data-testid="file-input"
-        />
         <button
           type="button"
           className="btn"
@@ -374,31 +374,24 @@ export function FolderContents({
           webkitdirectory=""
           data-testid="folder-input"
         />
-        <form onSubmit={handleCreateSubfolder} className="inline-form subfolder-form">
-          <input
-            placeholder="New subfolder"
-            value={newSubfolderName}
-            onChange={(e) => setNewSubfolderName(e.target.value)}
-            data-testid="new-subfolder-name"
-          />
-          <button
-            type="submit"
-            className="btn"
-            disabled={busy || !newSubfolderName.trim()}
-            data-testid="create-subfolder"
-          >
-            Create
-          </button>
-        </form>
         <button
           type="button"
-          className="btn btn-danger"
-          onClick={() => void handleDeleteCurrentFolder()}
+          className="btn"
+          onClick={() => fileInputRef.current?.click()}
           disabled={busy}
-          data-testid="delete-folder"
+          data-testid="upload-button"
         >
-          Delete folder
+          Upload files
         </button>
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={handleUpload}
+          disabled={busy}
+          multiple
+          hidden
+          data-testid="file-input"
+        />
       </div>
 
       <p className="upload-hint muted">
@@ -464,23 +457,30 @@ export function FolderContents({
                   <td className="col-actions">
                     <button
                       type="button"
-                      className="icon-btn"
-                      title="Rename"
+                      className="btn btn-sm row-action"
+                      disabled={busy}
+                      onClick={() => onOpenSubfolder(sub)}
+                      data-testid="open-subfolder"
+                    >
+                      Open
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm row-action"
                       disabled={busy}
                       onClick={() => setRenaming({ kind: "folder", id: sub.id, name: sub.name })}
                       data-testid="rename-subfolder"
                     >
-                      ✎
+                      Rename
                     </button>
                     <button
                       type="button"
-                      className="icon-btn"
-                      title="Delete"
+                      className="btn btn-sm row-action btn-danger"
                       disabled={busy}
                       onClick={() => void handleDeleteSubfolder(sub.id)}
                       data-testid="delete-subfolder"
                     >
-                      🗑
+                      Delete
                     </button>
                   </td>
                 </tr>
@@ -519,8 +519,7 @@ export function FolderContents({
                   <td className="col-actions">
                     <button
                       type="button"
-                      className="icon-btn"
-                      title="Download"
+                      className="btn btn-sm row-action"
                       disabled={busy}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -528,12 +527,11 @@ export function FolderContents({
                       }}
                       data-testid="download-file"
                     >
-                      ↓
+                      Download
                     </button>
                     <button
                       type="button"
-                      className="icon-btn"
-                      title="Rename"
+                      className="btn btn-sm row-action"
                       disabled={busy}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -541,12 +539,11 @@ export function FolderContents({
                       }}
                       data-testid="rename-file"
                     >
-                      ✎
+                      Rename
                     </button>
                     <button
                       type="button"
-                      className="icon-btn"
-                      title="Delete"
+                      className="btn btn-sm row-action btn-danger"
                       disabled={busy}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -554,7 +551,7 @@ export function FolderContents({
                       }}
                       data-testid="delete-file"
                     >
-                      🗑
+                      Delete
                     </button>
                   </td>
                 </tr>

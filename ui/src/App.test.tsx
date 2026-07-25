@@ -4,16 +4,14 @@ import userEvent from "@testing-library/user-event";
 import App from "./App";
 import * as core from "./lib/core";
 import * as auth from "./lib/auth";
+import { formatElapsed } from "./lib/formatElapsed";
+import { formatOperationError } from "./lib/formatOperationError";
 
-// Wiring tests (jsdom): assert user actions call the right core.* function
-// and render its result. core/ and auth are mocked at this boundary —
-// crypto/E2EE correctness is proven separately by the Playwright E2E suite
-// against a real Synapse, never here. See docs/UI_SPEC.md.
 vi.mock("./lib/core", async () => {
   const actual = await vi.importActual<typeof import("./lib/core")>("./lib/core");
   return {
     ...actual,
-    TeleCryptIOStorage: { create: vi.fn() },
+    TeleCryptIOStorage: { create: vi.fn(), createFromOidc: vi.fn() },
     listFolders: vi.fn(),
     listPendingInvites: vi.fn(),
     createFolder: vi.fn(),
@@ -61,11 +59,11 @@ function fakeStorage() {
   };
 }
 
-async function loginAndReachFolders(initialFolders: Array<{ id: string; name: string }> = []) {
+async function loginAndReachVaults(initialVaults: Array<{ id: string; name: string }> = []) {
   const storage = fakeStorage();
   vi.mocked(auth.loginWithPassword).mockResolvedValue(SESSION);
   vi.mocked(core.TeleCryptIOStorage.create).mockResolvedValue(storage as never);
-  vi.mocked(core.listFolders).mockResolvedValue(initialFolders);
+  vi.mocked(core.listFolders).mockResolvedValue(initialVaults);
   vi.mocked(core.listPendingInvites).mockResolvedValue([]);
 
   const user = userEvent.setup();
@@ -78,12 +76,35 @@ async function loginAndReachFolders(initialFolders: Array<{ id: string; name: st
   await user.click(screen.getByTestId("submit"));
 
   await waitFor(() => expect(screen.getByTestId("current-user")).toHaveTextContent(SESSION.userId));
-  if (initialFolders.length === 0) {
-    await screen.findByTestId("no-folders");
+  if (initialVaults.length === 0) {
+    await screen.findByTestId("no-vaults");
   } else {
-    await screen.findByText(initialFolders[0].name);
+    await screen.findByText(initialVaults[0].name);
   }
   return { storage, user };
+}
+
+async function openVault(
+  name = "Docs",
+  opts?: {
+    files?: Array<{ id: string; name: string }>;
+    subfolders?: Array<{ id: string; name: string }>;
+    members?: Array<{ userId: string; role: string; membership: string }>;
+  },
+) {
+  vi.mocked(core.listFiles).mockImplementation(async () => opts?.files ?? []);
+  vi.mocked(core.listSubfolders).mockImplementation(async () => opts?.subfolders ?? []);
+  vi.mocked(core.listMembers).mockImplementation(async () => opts?.members ?? []);
+  vi.mocked(core.getFolderDetails).mockResolvedValue({
+    name,
+    id: "!f:localhost",
+    createdAt: null,
+    memberCount: opts?.members?.length ?? 1,
+  });
+  const { user } = await loginAndReachVaults([{ id: "!f:localhost", name }]);
+  await user.click(screen.getByRole("button", { name }));
+  await screen.findByTestId("folder-detail");
+  return user;
 }
 
 beforeEach(() => {
@@ -91,9 +112,40 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+describe("formatElapsed", () => {
+  it("shows milliseconds under 2 seconds", () => {
+    expect(formatElapsed(340)).toBe("340ms");
+    expect(formatElapsed(1999)).toBe("1999ms");
+  });
+
+  it("shows seconds with one decimal under one minute", () => {
+    expect(formatElapsed(2500)).toBe("2.5s");
+    expect(formatElapsed(45000)).toBe("45.0s");
+  });
+
+  it("shows m:ss at one minute and beyond", () => {
+    expect(formatElapsed(65000)).toBe("1:05");
+    expect(formatElapsed(125000)).toBe("2:05");
+  });
+});
+
+describe("formatOperationError", () => {
+  it("maps 413 / M_TOO_LARGE to user-facing upload message", () => {
+    expect(formatOperationError(new Error("HTTP 413"))).toBe("Server refused to create file");
+    expect(formatOperationError(new Error("M_TOO_LARGE"))).toBe("Server refused to create file");
+    expect(formatOperationError(new Error("Upload request body is too large"))).toBe(
+      "Server refused to create file",
+    );
+  });
+
+  it("passes through other errors unchanged", () => {
+    expect(formatOperationError(new Error("network down"))).toBe("network down");
+  });
+});
+
 describe("login", () => {
-  it("calls loginWithPassword with the entered credentials and lands on the folder list", async () => {
-    await loginAndReachFolders();
+  it("calls loginWithPassword with the entered credentials and lands on the vault list", async () => {
+    await loginAndReachVaults();
     expect(auth.loginWithPassword).toHaveBeenCalledWith(
       SESSION.homeserver,
       "alice",
@@ -107,7 +159,7 @@ describe("login", () => {
         accessToken: SESSION.accessToken,
       }),
     );
-    expect(screen.getByTestId("no-folders")).toBeInTheDocument();
+    expect(screen.getByTestId("no-vaults")).toBeInTheDocument();
   });
 
   it("shows the auth error from a failed login without calling storage.create", async () => {
@@ -124,34 +176,45 @@ describe("login", () => {
   });
 });
 
-describe("folders", () => {
-  it("creates a folder via core.createFolder with untitled name and inline rename", async () => {
-    await loginAndReachFolders();
+describe("vaults", () => {
+  it("creates a vault via core.createFolder with untitled name and inline rename", async () => {
+    await loginAndReachVaults();
     vi.mocked(core.listFiles).mockResolvedValue([]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.listMembers).mockResolvedValue([]);
     vi.mocked(core.getFolderDetails).mockResolvedValue({
-      name: "Untitled folder",
+      name: "Untitled vault",
       id: "!new:localhost",
       createdAt: null,
       memberCount: 1,
     });
-    vi.mocked(core.createFolder).mockResolvedValue({ id: "!new:localhost", name: "Untitled folder" });
+    vi.mocked(core.createFolder).mockResolvedValue({ id: "!new:localhost", name: "Untitled vault" });
     vi.mocked(core.renameFolder).mockResolvedValue({ id: "!new:localhost", name: "Docs" });
     vi.mocked(core.listFolders).mockResolvedValue([{ id: "!new:localhost", name: "Docs" }]);
 
     const user = userEvent.setup();
-    await user.click(screen.getByTestId("create-folder"));
+    await user.click(screen.getByTestId("create-vault"));
 
-    expect(core.createFolder).toHaveBeenCalledWith(expect.anything(), "Untitled folder");
+    expect(core.createFolder).toHaveBeenCalledWith(expect.anything(), "Untitled vault");
 
-    const renameInput = await screen.findByTestId("rename-folder-input");
+    const renameInput = await screen.findByTestId("rename-vault-input");
     fireEvent.change(renameInput, { target: { value: "Docs" } });
     fireEvent.keyDown(renameInput, { key: "Enter" });
     await waitFor(() =>
       expect(core.renameFolder).toHaveBeenCalledWith(expect.anything(), "!new:localhost", "Docs"),
     );
     expect(await screen.findByTestId("folder-detail")).toHaveAttribute("data-folder-id", "!new:localhost");
+  });
+
+  it("lists and selects a vault", async () => {
+    vi.mocked(core.listFiles).mockResolvedValue([{ id: "$file1", name: "report.pdf" }]);
+    await loginAndReachVaults([{ id: "!f:localhost", name: "Docs" }]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Docs" }));
+
+    expect(core.listFiles).toHaveBeenCalledWith(expect.anything(), "!f:localhost");
+    expect(await screen.findByText("report.pdf")).toBeInTheDocument();
   });
 
   it("accepts a pending invite via core.joinFolder", async () => {
@@ -181,50 +244,56 @@ describe("folders", () => {
     );
   });
 
-  it("opens a folder and lists its files via core.listFiles", async () => {
-    vi.mocked(core.listFiles).mockResolvedValue([{ id: "$file1", name: "report.pdf" }]);
-    vi.mocked(core.listSubfolders).mockResolvedValue([]);
-    vi.mocked(core.listMembers).mockResolvedValue([]);
-    vi.mocked(core.getFolderDetails).mockResolvedValue({
-      name: "Docs",
-      id: "!f:localhost",
-      createdAt: null,
-      memberCount: 1,
-    });
-    await loginAndReachFolders([{ id: "!f:localhost", name: "Docs" }]);
+  it("declines a pending invite via core.declineInvite", async () => {
+    const storage = fakeStorage();
+    vi.mocked(auth.loginWithPassword).mockResolvedValue(SESSION);
+    vi.mocked(core.TeleCryptIOStorage.create).mockResolvedValue(storage as never);
+    vi.mocked(core.listFolders).mockResolvedValue([]);
+    vi.mocked(core.listPendingInvites).mockResolvedValue([
+      { id: "!shared:localhost", name: "Shared" },
+    ]);
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Docs" }));
+    render(<App />);
 
-    expect(core.listFiles).toHaveBeenCalledWith(expect.anything(), "!f:localhost");
-    expect(await screen.findByText("report.pdf")).toBeInTheDocument();
+    await user.type(screen.getByTestId("username"), "alice");
+    await user.type(screen.getByTestId("password"), "hunter2");
+    await user.click(screen.getByTestId("submit"));
+
+    await screen.findByTestId("invite-list");
+    await user.click(screen.getByTestId("decline-invite"));
+
+    await waitFor(() =>
+      expect(core.declineInvite).toHaveBeenCalledWith(expect.anything(), "!shared:localhost"),
+    );
+  });
+
+  it("nav up at vault root returns to vault list", async () => {
+    const user = await openVault();
+    await user.click(screen.getByTestId("nav-up"));
+    expect(await screen.findByTestId("select-vault-prompt")).toBeInTheDocument();
   });
 });
 
-describe("file upload/download", () => {
-  async function openFolder(initialFiles: Array<{ id: string; name: string }> = []) {
-    vi.mocked(core.listFiles).mockResolvedValue(initialFiles);
-    vi.mocked(core.listSubfolders).mockResolvedValue([]);
-    vi.mocked(core.listMembers).mockResolvedValue([]);
-    vi.mocked(core.getFolderDetails).mockResolvedValue({
-      name: "Docs",
-      id: "!f:localhost",
-      createdAt: null,
-      memberCount: 1,
-    });
-    await loginAndReachFolders([{ id: "!f:localhost", name: "Docs" }]);
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Docs" }));
-    if (initialFiles.length === 0) {
-      await screen.findByTestId("no-files");
-    } else {
-      await screen.findByText(initialFiles[0].name);
-    }
-    return user;
-  }
+describe("folder contents", () => {
+  it("creates a subfolder via button + inline rename", async () => {
+    const user = await openVault();
+    vi.mocked(core.createSubfolder).mockResolvedValue({ id: "!sub:localhost", name: "Untitled folder" });
+    vi.mocked(core.listSubfolders).mockResolvedValue([{ id: "!sub:localhost", name: "Child" }]);
+
+    await user.click(screen.getByTestId("create-subfolder"));
+    expect(core.createSubfolder).toHaveBeenCalledWith(expect.anything(), "!f:localhost", "Untitled folder");
+
+    const renameInput = await screen.findByTestId("rename-input");
+    fireEvent.change(renameInput, { target: { value: "Child" } });
+    fireEvent.keyDown(renameInput, { key: "Enter" });
+    await waitFor(() =>
+      expect(core.renameFolder).toHaveBeenCalledWith(expect.anything(), "!sub:localhost", "Child"),
+    );
+  });
 
   it("uploads a picked file via core.uploadFile", async () => {
-    const user = await openFolder();
+    const user = await openVault();
     vi.mocked(core.uploadFile).mockResolvedValue({ id: "$new", name: "hello.txt" });
     vi.mocked(core.listFiles).mockResolvedValue([{ id: "$new", name: "hello.txt" }]);
 
@@ -244,13 +313,26 @@ describe("file upload/download", () => {
     expect(await screen.findByText("hello.txt")).toBeInTheDocument();
   });
 
-  it("downloads a file via core.downloadFile when Download is clicked", async () => {
+  it("shows mapped error when upload fails with 413", async () => {
+    const user = await openVault();
+    vi.mocked(core.uploadFile).mockRejectedValue(new Error("HTTP 413 M_TOO_LARGE"));
+
+    const file = new File(["x"], "big.bin", { type: "application/octet-stream" });
+    await user.upload(screen.getByTestId("file-input"), file);
+
+    expect(await screen.findByTestId("folder-detail-error")).toHaveTextContent(
+      "Server refused to create file",
+    );
+  });
+
+  it("downloads a file via core.downloadFile", async () => {
     vi.mocked(core.downloadFile).mockResolvedValue({
       bytes: new TextEncoder().encode("hello world"),
       mimetype: "text/plain",
       name: "hello.txt",
     });
-    const user = await openFolder([{ id: "$f1", name: "hello.txt" }]);
+    const user = await openVault("Docs", { files: [{ id: "$f1", name: "hello.txt" }] });
+    await screen.findByText("hello.txt");
 
     await user.click(screen.getByTestId("download-file"));
 
@@ -258,23 +340,57 @@ describe("file upload/download", () => {
       expect(core.downloadFile).toHaveBeenCalledWith(expect.anything(), "!f:localhost", "$f1"),
     );
   });
+
+  it("renames and deletes a file", async () => {
+    const user = await openVault("Docs", { files: [{ id: "$f1", name: "old.txt" }] });
+    await screen.findByText("old.txt");
+
+    await user.click(screen.getByTestId("rename-file"));
+    const input = screen.getByTestId("rename-input");
+    fireEvent.change(input, { target: { value: "new.txt" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(core.renameFile).toHaveBeenCalledWith(expect.anything(), "!f:localhost", "$f1", "new.txt"),
+    );
+
+    vi.stubGlobal("confirm", () => true);
+    vi.mocked(core.listFiles).mockResolvedValue([]);
+    await user.click(screen.getByTestId("delete-file"));
+    await waitFor(() =>
+      expect(core.deleteFile).toHaveBeenCalledWith(expect.anything(), "!f:localhost", "$f1"),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("renames and deletes a subfolder", async () => {
+    const user = await openVault("Docs", { subfolders: [{ id: "!sub:localhost", name: "Child" }] });
+    await waitFor(() => expect(screen.getByTestId("subfolder-item")).toHaveTextContent("Child"));
+
+    await user.click(screen.getByTestId("rename-subfolder"));
+    const input = screen.getByTestId("rename-input");
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(core.renameFolder).toHaveBeenCalledWith(expect.anything(), "!sub:localhost", "Renamed"),
+    );
+
+    vi.stubGlobal("confirm", () => true);
+    await user.click(screen.getByTestId("delete-subfolder"));
+    await waitFor(() =>
+      expect(core.deleteFolder).toHaveBeenCalledWith(expect.anything(), "!sub:localhost"),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the details panel when a vault is open", async () => {
+    await openVault();
+    expect(screen.getByTestId("details-panel")).toBeInTheDocument();
+  });
 });
 
 describe("sharing", () => {
   it("invites a user via core.shareFolder and shows them in the member list", async () => {
-    vi.mocked(core.listFiles).mockResolvedValue([]);
-    vi.mocked(core.listSubfolders).mockResolvedValue([]);
-    vi.mocked(core.listMembers).mockResolvedValue([]);
-    vi.mocked(core.getFolderDetails).mockResolvedValue({
-      name: "Docs",
-      id: "!f:localhost",
-      createdAt: null,
-      memberCount: 1,
-    });
-    await loginAndReachFolders([{ id: "!f:localhost", name: "Docs" }]);
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Docs" }));
+    const user = await openVault();
     await screen.findByTestId("no-files");
 
     vi.mocked(core.shareFolder).mockResolvedValue({
@@ -299,22 +415,10 @@ describe("sharing", () => {
   });
 
   it("removes a member via core.unshareFolder", async () => {
-    vi.mocked(core.listFiles).mockResolvedValue([]);
-    vi.mocked(core.listSubfolders).mockResolvedValue([]);
-    vi.mocked(core.listMembers).mockResolvedValue([
-      { userId: "@bob:localhost", role: "viewer", membership: "join" },
-    ]);
-    vi.mocked(core.getFolderDetails).mockResolvedValue({
-      name: "Docs",
-      id: "!f:localhost",
-      createdAt: null,
-      memberCount: 2,
+    const user = await openVault("Docs", {
+      members: [{ userId: "@bob:localhost", role: "viewer", membership: "join" }],
     });
-    await loginAndReachFolders([{ id: "!f:localhost", name: "Docs" }]);
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Docs" }));
-    await screen.findByTestId("member-item");
+    await waitFor(() => expect(screen.getByTestId("member-item")).toBeInTheDocument());
 
     vi.mocked(core.unshareFolder).mockResolvedValue({
       folderId: "!f:localhost",
@@ -334,8 +438,8 @@ describe("sharing", () => {
 });
 
 describe("recovery", () => {
-  it("sets up recovery via core.setupRecovery and shows the recovery key", async () => {
-    const { storage } = await loginAndReachFolders();
+  it("sets up recovery, requires confirm saved, then dismisses key display", async () => {
+    const { storage } = await loginAndReachVaults();
     vi.mocked(storage.keys.isRecoverySetup).mockResolvedValue(false);
     vi.mocked(core.setupRecovery).mockResolvedValue({ recoveryKey: "EsTx 1234 5678" });
 
@@ -345,18 +449,41 @@ describe("recovery", () => {
 
     expect(core.setupRecovery).toHaveBeenCalledWith(expect.anything());
     expect(await screen.findByTestId("recovery-key-value")).toHaveTextContent("EsTx 1234 5678");
+    expect(screen.queryByTestId("restore-key-input")).not.toBeInTheDocument();
+
+    expect(screen.getByTestId("recovery-setup-done")).toBeDisabled();
+    await user.click(screen.getByTestId("confirm-saved-recovery-key"));
+    await user.click(screen.getByTestId("recovery-setup-done"));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("recovery-key-display")).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByTestId("recovery-active")).toBeInTheDocument();
   });
 
-  it("restores from a pasted key via core.restoreRecovery", async () => {
-    await loginAndReachFolders();
+  it("restores from a pasted key when recovery is already set up", async () => {
+    const { storage } = await loginAndReachVaults();
+    vi.mocked(storage.keys.isRecoverySetup).mockResolvedValue(true);
     vi.mocked(core.restoreRecovery).mockResolvedValue({ imported: 3, total: 3 });
 
     const user = userEvent.setup();
     await user.click(screen.getByTestId("nav-recovery"));
+    await user.click(await screen.findByTestId("restore-expand"));
     await user.type(screen.getByTestId("restore-key-input"), "EsTx recovery key text");
     await user.click(screen.getByTestId("restore-submit"));
 
     expect(core.restoreRecovery).toHaveBeenCalledWith(expect.anything(), "EsTx recovery key text");
     expect(await screen.findByTestId("restore-result")).toHaveTextContent("Imported 3 of 3");
+  });
+
+  it("shows restore expandable on a device without local recovery setup", async () => {
+    const { storage } = await loginAndReachVaults();
+    vi.mocked(storage.keys.isRecoverySetup).mockResolvedValue(false);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId("nav-recovery"));
+    expect(await screen.findByTestId("recovery-not-setup")).toBeInTheDocument();
+    expect(await screen.findByTestId("restore-expand")).toBeInTheDocument();
+    expect(screen.queryByTestId("restore-key-input")).not.toBeInTheDocument();
   });
 });

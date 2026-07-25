@@ -11,6 +11,7 @@ import { TeleCryptIOStorage, discoverOidcIssuer, buildTokenRefreshFunction } fro
 import { loginWithPassword, registerAccount } from "../lib/auth";
 import { beginOidcLogin, completeOidcLoginFromCallback, isOidcCallback } from "../lib/oidcAuth";
 import { clearSession, loadSession, saveSession, type Session } from "../lib/session";
+import { prefetchCryptoWasm, watchWasmResourceProgress } from "../lib/wasmProgress";
 
 export type ConnectionStatus = "signed-out" | "connecting" | "ready" | "error";
 
@@ -68,6 +69,16 @@ export function StorageProvider({ children }: { children: ReactNode }) {
     setConnectLog((prev) => [...prev, { at: Date.now(), message }]);
   }, []);
 
+  const appendOrReplaceDownloadLog = useCallback((message: string) => {
+    setConnectLog((prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.message.startsWith("Downloading encryption engine")) {
+        return [...prev.slice(0, -1), { at: Date.now(), message }];
+      }
+      return [...prev, { at: Date.now(), message }];
+    });
+  }, []);
+
   const beginConnecting = useCallback((firstMessage: string) => {
     connectStartedAtRef.current = Date.now();
     setStatus("connecting");
@@ -93,48 +104,59 @@ export function StorageProvider({ children }: { children: ReactNode }) {
           appendLog(`Opening encrypted session for ${s.userId}…`);
         }
         try {
+          const wasmWatchStop = watchWasmResourceProgress(appendOrReplaceDownloadLog);
+          void prefetchCryptoWasm(appendOrReplaceDownloadLog);
           const bootstrapOpts = {
             syncTimeoutMs: UI_SYNC_TIMEOUT_MS,
             initTimeoutMs: UI_INIT_TIMEOUT_MS,
             onProgress: (message: string) => {
-              if (gen === connectGenRef.current) appendLog(message);
+              if (gen !== connectGenRef.current) return;
+              if (message.startsWith("Downloading encryption engine")) {
+                appendOrReplaceDownloadLog(message);
+              } else {
+                appendLog(message);
+              }
             },
           };
           let client: TeleCryptIOStorage;
-          if (s.refreshToken && s.oidcIssuer && s.oidcClientId) {
-            appendLog("Discovering authentication server…");
-            const authMetadata = await discoverOidcIssuer(s.homeserver);
-            appendLog(`Auth issuer: ${authMetadata.issuer}`);
-            const tokenRefreshFunction = buildTokenRefreshFunction(
-              authMetadata.token_endpoint,
-              s.oidcClientId,
-              async (tokens) => {
-                saveSession({
-                  ...s,
-                  accessToken: tokens.accessToken,
-                  refreshToken: tokens.refreshToken ?? s.refreshToken,
-                });
-              },
-            );
-            appendLog("Building encrypted client (OIDC session)…");
-            client = await TeleCryptIOStorage.createFromOidc({
-              baseUrl: s.homeserver,
-              userId: s.userId,
-              accessToken: s.accessToken,
-              deviceId: s.deviceId,
-              refreshToken: s.refreshToken,
-              tokenRefreshFunction,
-              ...bootstrapOpts,
-            });
-          } else {
-            appendLog("Building encrypted client…");
-            client = await TeleCryptIOStorage.create({
-              baseUrl: s.homeserver,
-              userId: s.userId,
-              accessToken: s.accessToken,
-              deviceId: s.deviceId,
-              ...bootstrapOpts,
-            });
+          try {
+            if (s.refreshToken && s.oidcIssuer && s.oidcClientId) {
+              appendLog("Discovering authentication server…");
+              const authMetadata = await discoverOidcIssuer(s.homeserver);
+              appendLog(`Auth issuer: ${authMetadata.issuer}`);
+              const tokenRefreshFunction = buildTokenRefreshFunction(
+                authMetadata.token_endpoint,
+                s.oidcClientId,
+                async (tokens) => {
+                  saveSession({
+                    ...s,
+                    accessToken: tokens.accessToken,
+                    refreshToken: tokens.refreshToken ?? s.refreshToken,
+                  });
+                },
+              );
+              appendLog("Building encrypted client (OIDC session)…");
+              client = await TeleCryptIOStorage.createFromOidc({
+                baseUrl: s.homeserver,
+                userId: s.userId,
+                accessToken: s.accessToken,
+                deviceId: s.deviceId,
+                refreshToken: s.refreshToken,
+                tokenRefreshFunction,
+                ...bootstrapOpts,
+              });
+            } else {
+              appendLog("Building encrypted client…");
+              client = await TeleCryptIOStorage.create({
+                baseUrl: s.homeserver,
+                userId: s.userId,
+                accessToken: s.accessToken,
+                deviceId: s.deviceId,
+                ...bootstrapOpts,
+              });
+            }
+          } finally {
+            wasmWatchStop();
           }
           if (gen !== connectGenRef.current) {
             client.getClient().stopClient();
@@ -170,7 +192,7 @@ export function StorageProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [appendLog, beginConnecting],
+    [appendLog, appendOrReplaceDownloadLog, beginConnecting],
   );
 
   useEffect(() => {
@@ -250,7 +272,7 @@ export function StorageProvider({ children }: { children: ReactNode }) {
         setStatus("error");
       }
     },
-    [appendLog, beginConnecting],
+    [appendLog, appendOrReplaceDownloadLog, beginConnecting],
   );
 
   const logout = useCallback(() => {
