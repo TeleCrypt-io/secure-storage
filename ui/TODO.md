@@ -20,3 +20,9 @@ appear without polling.
 Run `vite build && vite preview` + minimal Playwright smoke in CI before GitHub
 Pages upload — catches matrix-js-sdk dedupe / blank-page regressions before prod.
 See `CLAUDE.md` known gap.
+
+## Prod UI functional testing (done 2026-07-25)
+
+Post-deploy Part C (`npm run test:prod:ui`) completes OIDC login against live prod and
+exercises the file manager. Role-aware UI and sync-event-driven lists (replacing polling)
+remain deferred above.

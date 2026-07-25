@@ -7,6 +7,18 @@
   gap: 12px;
 }
 
+.connecting-hint {
+  max-width: 420px;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.connecting-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
 .panel {
   display: flex;
   flex-direction: column;
