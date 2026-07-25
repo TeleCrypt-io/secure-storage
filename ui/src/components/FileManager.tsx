@@ -1,27 +1,44 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useStorage } from "../context/StorageContext";
 import * as core from "../lib/core";
 import type { FolderInfo } from "../lib/core";
+import { DetailsPanel, type Selection } from "./DetailsPanel";
 import { FolderContents } from "./FolderContents";
-import { MembersPanel } from "./MembersPanel";
 
 const POLL_MS = 2500;
+const UNTITLED = "Untitled folder";
 
-export function FileManager() {
+function uniqueUntitledName(existing: FolderInfo[]): string {
+  const names = new Set(existing.map((f) => f.name.toLowerCase()));
+  if (!names.has(UNTITLED.toLowerCase())) return UNTITLED;
+  let i = 2;
+  while (names.has(`${UNTITLED} ${i}`.toLowerCase())) i++;
+  return `${UNTITLED} ${i}`;
+}
+
+export function FileManager({ onOpenRecovery }: { onOpenRecovery?: () => void }) {
   const { storage } = useStorage();
   const [folders, setFolders] = useState<FolderInfo[] | null>(null);
+  const [invites, setInvites] = useState<FolderInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [joinId, setJoinId] = useState("");
   const [rootFolder, setRootFolder] = useState<FolderInfo | null>(null);
   const [subPath, setSubPath] = useState<FolderInfo[]>([]);
+  const [sidebarRenaming, setSidebarRenaming] = useState<{ id: string; name: string } | null>(
+    null,
+  );
+  const [selection, setSelection] = useState<Selection>(null);
+  const [recoveryNeeded, setRecoveryNeeded] = useState(false);
 
   const refreshFolders = useCallback(async () => {
     if (!storage) return;
     try {
-      const result = await core.listFolders(storage);
+      const [result, pending] = await Promise.all([
+        core.listFolders(storage),
+        core.listPendingInvites(storage),
+      ]);
       setFolders(result);
+      setInvites(pending);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -33,6 +50,11 @@ export function FileManager() {
     return () => clearInterval(timer);
   }, [refreshFolders]);
 
+  useEffect(() => {
+    if (!storage) return;
+    void storage.keys.isRecoverySetup().then((ok) => setRecoveryNeeded(!ok));
+  }, [storage]);
+
   const currentFolder =
     subPath.length > 0 ? subPath[subPath.length - 1]! : rootFolder;
 
@@ -43,10 +65,12 @@ export function FileManager() {
   function selectRoot(folder: FolderInfo) {
     setRootFolder(folder);
     setSubPath([]);
+    setSelection(null);
   }
 
   function openSubfolder(sub: FolderInfo) {
     setSubPath((prev) => [...prev, sub]);
+    setSelection(null);
   }
 
   function navigateBreadcrumb(index: number) {
@@ -55,6 +79,7 @@ export function FileManager() {
     } else {
       setSubPath((prev) => prev.slice(0, index));
     }
+    setSelection(null);
   }
 
   function handleFolderRenamed(folderId: string, name: string) {
@@ -77,18 +102,20 @@ export function FileManager() {
       setRootFolder(null);
       setSubPath([]);
     }
+    setSelection(null);
     void refreshFolders();
   }
 
-  async function handleCreate(e: FormEvent) {
-    e.preventDefault();
+  async function handleNewFolder() {
     setBusy(true);
     setError(null);
     try {
-      const created = await core.createFolder(storage!, newName.trim());
-      setNewName("");
-      await refreshFolders();
+      const name = uniqueUntitledName(folders ?? []);
+      const created = await core.createFolder(storage!, name);
+      setFolders((prev) => [...(prev ?? []), created]);
       selectRoot(created);
+      setSidebarRenaming({ id: created.id, name: created.name });
+      void refreshFolders();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -96,13 +123,44 @@ export function FileManager() {
     }
   }
 
-  async function handleJoin(e: FormEvent) {
-    e.preventDefault();
+  async function commitSidebarRename() {
+    if (!sidebarRenaming) return;
+    const trimmed = sidebarRenaming.name.trim();
+    if (!trimmed) {
+      setSidebarRenaming(null);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      await core.joinFolder(storage!, joinId.trim());
-      setJoinId("");
+      await core.renameFolder(storage!, sidebarRenaming.id, trimmed);
+      handleFolderRenamed(sidebarRenaming.id, trimmed);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+      setSidebarRenaming(null);
+    }
+  }
+
+  async function handleAcceptInvite(folderId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await core.joinFolder(storage!, folderId);
+      await refreshFolders();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeclineInvite(folderId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await core.declineInvite(storage!, folderId);
       await refreshFolders();
     } catch (err) {
       setError((err as Error).message);
@@ -116,29 +174,53 @@ export function FileManager() {
       <aside className="folder-sidebar">
         <h2 className="sidebar-title">Folders</h2>
 
-        <form onSubmit={handleCreate} className="sidebar-form">
-          <input
-            placeholder="New folder"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            data-testid="new-folder-name"
-          />
-          <button type="submit" className="btn btn-primary" disabled={busy || !newName.trim()} data-testid="create-folder">
-            Create
-          </button>
-        </form>
+        <button
+          type="button"
+          className="btn btn-primary sidebar-new-folder"
+          onClick={() => void handleNewFolder()}
+          disabled={busy}
+          data-testid="create-folder"
+        >
+          New folder
+        </button>
 
-        <form onSubmit={handleJoin} className="sidebar-form">
-          <input
-            placeholder="Folder ID to join"
-            value={joinId}
-            onChange={(e) => setJoinId(e.target.value)}
-            data-testid="join-folder-id"
-          />
-          <button type="submit" className="btn" disabled={busy || !joinId.trim()} data-testid="join-folder">
-            Join
-          </button>
-        </form>
+        {invites != null && invites.length > 0 && (
+          <section className="invite-section" data-testid="invite-list">
+            <h3 className="sidebar-subtitle">Invitations</h3>
+            <ul className="invite-list">
+              {invites.map((inv) => (
+                <li
+                  key={inv.id}
+                  className="invite-item"
+                  data-testid="invite-item"
+                  data-folder-id={inv.id}
+                >
+                  <span className="invite-name">{inv.name}</span>
+                  <div className="invite-actions">
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      disabled={busy}
+                      onClick={() => void handleAcceptInvite(inv.id)}
+                      data-testid="accept-invite"
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={busy}
+                      onClick={() => void handleDeclineInvite(inv.id)}
+                      data-testid="decline-invite"
+                    >
+                      Decline
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         {error && (
           <p className="error" data-testid="folder-list-error">
@@ -156,13 +238,30 @@ export function FileManager() {
           <ul className="folder-list" data-testid="folder-list">
             {folders.map((f) => (
               <li key={f.id} data-testid="folder-item" data-folder-id={f.id}>
-                <button
-                  type="button"
-                  className={`folder-list-btn${rootFolder?.id === f.id ? " active" : ""}`}
-                  onClick={() => selectRoot(f)}
-                >
-                  {f.name}
-                </button>
+                {sidebarRenaming?.id === f.id ? (
+                  <input
+                    className="rename-input sidebar-rename"
+                    value={sidebarRenaming.name}
+                    autoFocus
+                    onChange={(e) =>
+                      setSidebarRenaming({ ...sidebarRenaming, name: e.target.value })
+                    }
+                    onBlur={() => void commitSidebarRename()}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void commitSidebarRename();
+                      if (e.key === "Escape") setSidebarRenaming(null);
+                    }}
+                    data-testid="rename-folder-input"
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    className={`folder-list-btn${rootFolder?.id === f.id ? " active" : ""}`}
+                    onClick={() => selectRoot(f)}
+                  >
+                    {f.name}
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -170,6 +269,15 @@ export function FileManager() {
       </aside>
 
       <section className="folder-main">
+        {recoveryNeeded && onOpenRecovery && (
+          <div className="recovery-banner" data-testid="recovery-banner">
+            <span>Protect this account — set up recovery</span>
+            <button type="button" className="btn btn-sm" onClick={onOpenRecovery}>
+              Set up recovery
+            </button>
+          </div>
+        )}
+
         {!currentFolder ? (
           <div className="empty-panel muted" data-testid="select-folder-prompt">
             Select or create a folder to browse files.
@@ -183,11 +291,15 @@ export function FileManager() {
             onOpenSubfolder={openSubfolder}
             onFolderRenamed={handleFolderRenamed}
             onFolderDeleted={handleFolderDeleted}
+            selection={selection}
+            onSelect={setSelection}
           />
         )}
       </section>
 
-      {currentFolder && <MembersPanel folderId={currentFolder.id} />}
+      {currentFolder && (
+        <DetailsPanel folderId={currentFolder.id} selection={selection} />
+      )}
     </div>
   );
 }

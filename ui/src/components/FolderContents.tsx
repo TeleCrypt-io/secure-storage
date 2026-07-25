@@ -6,10 +6,12 @@ import {
   type ChangeEvent,
   type DragEvent,
   type FormEvent,
+  type MouseEvent,
 } from "react";
 import { useStorage } from "../context/StorageContext";
 import * as core from "../lib/core";
-import type { FileInfo, FolderInfo } from "../lib/core";
+import type { FileInfo, FolderInfo, TeleCryptIOStorage } from "../lib/core";
+import type { Selection } from "./DetailsPanel";
 
 const POLL_MS = 2500;
 
@@ -38,6 +40,29 @@ function FileIcon() {
   );
 }
 
+/** Ensure nested path segments exist under folderId; returns leaf folder id. */
+async function ensurePath(
+  storage: TeleCryptIOStorage,
+  rootFolderId: string,
+  relativePath: string,
+): Promise<string> {
+  const parts = relativePath.split("/").filter(Boolean);
+  if (parts.length <= 1) return rootFolderId;
+
+  let currentId = rootFolderId;
+  for (const segment of parts.slice(0, -1)) {
+    const subs = await core.listSubfolders(storage, currentId);
+    const existing = subs.find((s) => s.name === segment);
+    if (existing) {
+      currentId = existing.id;
+    } else {
+      const created = await core.createSubfolder(storage, currentId, segment);
+      currentId = created.id;
+    }
+  }
+  return currentId;
+}
+
 export function FolderContents({
   folderId,
   folderName,
@@ -46,6 +71,8 @@ export function FolderContents({
   onOpenSubfolder,
   onFolderRenamed,
   onFolderDeleted,
+  selection,
+  onSelect,
 }: {
   folderId: string;
   folderName: string;
@@ -54,6 +81,8 @@ export function FolderContents({
   onOpenSubfolder: (sub: FolderInfo) => void;
   onFolderRenamed: (folderId: string, name: string) => void;
   onFolderDeleted: (folderId: string) => void;
+  selection: Selection;
+  onSelect: (sel: Selection) => void;
 }) {
   const { storage } = useStorage();
   const [files, setFiles] = useState<FileInfo[] | null>(null);
@@ -66,6 +95,7 @@ export function FolderContents({
   );
   const [newSubfolderName, setNewSubfolderName] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
     if (!storage) return;
@@ -87,11 +117,11 @@ export function FolderContents({
     return () => clearInterval(timer);
   }, [refresh]);
 
-  async function uploadBytes(name: string, bytes: Uint8Array, mimetype: string) {
+  async function uploadBytes(targetFolderId: string, name: string, bytes: Uint8Array, mimetype: string) {
     setBusy(true);
     setError(null);
     try {
-      await core.uploadFile(storage!, folderId, name, bytes, mimetype);
+      await core.uploadFile(storage!, targetFolderId, name, bytes, mimetype);
       await refresh();
     } catch (err) {
       setError((err as Error).message);
@@ -106,9 +136,37 @@ export function FolderContents({
     for (const file of Array.from(list)) {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const mimetype = file.type || "application/octet-stream";
-      await uploadBytes(file.name, bytes, mimetype);
+      await uploadBytes(folderId, file.name, bytes, mimetype);
     }
     if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  async function handleFolderUpload(e: ChangeEvent<HTMLInputElement>) {
+    const list = e.target.files;
+    if (!list?.length || !storage) return;
+    setBusy(true);
+    setError(null);
+    try {
+      for (const file of Array.from(list)) {
+        const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+        const targetId = await ensurePath(storage, folderId, rel);
+        const fileName = rel.includes("/") ? rel.split("/").pop()! : rel;
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        await core.uploadFile(
+          storage,
+          targetId,
+          fileName,
+          bytes,
+          file.type || "application/octet-stream",
+        );
+      }
+      await refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+      if (folderInputRef.current) folderInputRef.current.value = "";
+    }
   }
 
   async function handleDrop(e: DragEvent) {
@@ -118,7 +176,7 @@ export function FolderContents({
     if (!list.length) return;
     for (const file of Array.from(list)) {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      await uploadBytes(file.name, bytes, file.type || "application/octet-stream");
+      await uploadBytes(folderId, file.name, bytes, file.type || "application/octet-stream");
     }
   }
 
@@ -150,6 +208,7 @@ export function FolderContents({
     setError(null);
     try {
       await core.deleteFile(storage!, folderId, fileId);
+      if (selection?.kind === "file" && selection.id === fileId) onSelect(null);
       await refresh();
     } catch (err) {
       setError((err as Error).message);
@@ -164,6 +223,7 @@ export function FolderContents({
     setError(null);
     try {
       await core.deleteFolder(storage!, subId);
+      if (selection?.id === subId) onSelect(null);
       await refresh();
     } catch (err) {
       setError((err as Error).message);
@@ -226,6 +286,24 @@ export function FolderContents({
     }
   }
 
+  function isFileSelected(fileId: string) {
+    return selection?.kind === "file" && selection.id === fileId;
+  }
+
+  function isSubfolderSelected(subId: string) {
+    return selection?.kind === "folder" && selection.id === subId;
+  }
+
+  function handleFileRowClick(f: FileInfo) {
+    onSelect({ kind: "file", id: f.id, folderId });
+  }
+
+  function handleSubfolderRowClick(sub: FolderInfo, e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (target.closest(".row-name-btn")) return;
+    onSelect({ kind: "folder", id: sub.id, folderId });
+  }
+
   const loading = files === null || subfolders === null;
   const empty = !loading && files!.length === 0 && subfolders!.length === 0;
 
@@ -265,7 +343,7 @@ export function FolderContents({
           disabled={busy}
           data-testid="upload-button"
         >
-          Upload
+          Upload files
         </button>
         <input
           type="file"
@@ -275,6 +353,26 @@ export function FolderContents({
           multiple
           hidden
           data-testid="file-input"
+        />
+        <button
+          type="button"
+          className="btn"
+          onClick={() => folderInputRef.current?.click()}
+          disabled={busy}
+          data-testid="upload-folder-button"
+        >
+          Upload folder
+        </button>
+        <input
+          type="file"
+          ref={folderInputRef}
+          onChange={handleFolderUpload}
+          disabled={busy}
+          multiple
+          hidden
+          // @ts-expect-error webkitdirectory is non-standard but widely supported
+          webkitdirectory=""
+          data-testid="folder-input"
         />
         <form onSubmit={handleCreateSubfolder} className="inline-form subfolder-form">
           <input
@@ -303,6 +401,10 @@ export function FolderContents({
         </button>
       </div>
 
+      <p className="upload-hint muted">
+        Files upload into this folder. Use Upload files or drag files here.
+      </p>
+
       {error && (
         <p className="error" data-testid="folder-detail-error">
           {error}
@@ -327,7 +429,13 @@ export function FolderContents({
             )}
             {!loading &&
               subfolders!.map((sub) => (
-                <tr key={sub.id} data-testid="subfolder-item" data-folder-id={sub.id}>
+                <tr
+                  key={sub.id}
+                  className={isSubfolderSelected(sub.id) ? "selected-row" : undefined}
+                  data-testid="subfolder-item"
+                  data-folder-id={sub.id}
+                  onClick={(e) => handleSubfolderRowClick(sub, e)}
+                >
                   <td>
                     {renaming?.kind === "folder" && renaming.id === sub.id ? (
                       <input
@@ -343,7 +451,11 @@ export function FolderContents({
                         data-testid="rename-input"
                       />
                     ) : (
-                      <button type="button" className="row-name-btn" onClick={() => onOpenSubfolder(sub)}>
+                      <button
+                        type="button"
+                        className="row-name-btn"
+                        onClick={() => onOpenSubfolder(sub)}
+                      >
                         <FolderIcon />
                         <span>{sub.name}</span>
                       </button>
@@ -375,7 +487,13 @@ export function FolderContents({
               ))}
             {!loading &&
               files!.map((f) => (
-                <tr key={f.id} data-testid="file-item" data-file-id={f.id}>
+                <tr
+                  key={f.id}
+                  className={isFileSelected(f.id) ? "selected-row" : undefined}
+                  data-testid="file-item"
+                  data-file-id={f.id}
+                  onClick={() => handleFileRowClick(f)}
+                >
                   <td>
                     {renaming?.kind === "file" && renaming.id === f.id ? (
                       <input
@@ -388,6 +506,7 @@ export function FolderContents({
                           if (e.key === "Enter") void commitRename();
                           if (e.key === "Escape") setRenaming(null);
                         }}
+                        onClick={(e) => e.stopPropagation()}
                         data-testid="rename-input"
                       />
                     ) : (
@@ -403,7 +522,10 @@ export function FolderContents({
                       className="icon-btn"
                       title="Download"
                       disabled={busy}
-                      onClick={() => void handleDownload(f)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleDownload(f);
+                      }}
                       data-testid="download-file"
                     >
                       ↓
@@ -413,7 +535,10 @@ export function FolderContents({
                       className="icon-btn"
                       title="Rename"
                       disabled={busy}
-                      onClick={() => setRenaming({ kind: "file", id: f.id, name: f.name })}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenaming({ kind: "file", id: f.id, name: f.name });
+                      }}
                       data-testid="rename-file"
                     >
                       ✎
@@ -423,7 +548,10 @@ export function FolderContents({
                       className="icon-btn"
                       title="Delete"
                       disabled={busy}
-                      onClick={() => void handleDeleteFile(f.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleDeleteFile(f.id);
+                      }}
                       data-testid="delete-file"
                     >
                       🗑
@@ -435,7 +563,8 @@ export function FolderContents({
         </table>
         {empty && (
           <p className="empty-state muted" data-testid="no-files">
-            No files yet — upload or drop files here.
+            This folder is empty. Upload files with the Upload files button above, or drag and
+            drop files here.
           </p>
         )}
       </div>

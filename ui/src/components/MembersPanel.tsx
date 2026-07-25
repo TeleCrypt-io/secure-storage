@@ -15,7 +15,7 @@ function initials(userId: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
-export function MembersPanel({ folderId }: { folderId: string }) {
+export function MembersPanel({ folderId, embedded }: { folderId: string; embedded?: boolean }) {
   const { storage, session } = useStorage();
   const [members, setMembers] = useState<Member[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -68,20 +68,26 @@ export function MembersPanel({ folderId }: { folderId: string }) {
   }
 
   return (
-    <aside className="members-panel" data-testid="members-panel">
-      <button
-        type="button"
-        className="members-panel-toggle"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-      >
-        <span>Access</span>
-        <span className="muted">{members?.length ?? "…"}</span>
-      </button>
+    <aside className={`members-panel${embedded ? " embedded" : ""}`} data-testid="members-panel">
+      {embedded ? (
+        <h3 className="panel-section-title">Access</h3>
+      ) : (
+        <button
+          type="button"
+          className="members-panel-toggle"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+        >
+          <span>Access</span>
+          <span className="muted">{members?.length ?? "…"}</span>
+        </button>
+      )}
 
-      {expanded && (
+      {(embedded || expanded) && (
         <>
-          <p className="members-panel-hint muted">Everyone with access to this folder</p>
+          {!embedded && (
+            <p className="members-panel-hint muted">Everyone with access to this folder</p>
+          )}
 
           {error && (
             <p className="error" data-testid="members-error">

@@ -57,8 +57,14 @@ function ConnectingScreen() {
 }
 
 function Shell() {
-  const { status, session, error, logout } = useStorage();
+  const { status, session, error, logout, storage } = useStorage();
   const [view, setView] = useState<View>("folders");
+  const [recoverySetup, setRecoverySetup] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (status !== "ready" || !storage) return;
+    void storage.keys.isRecoverySetup().then(setRecoverySetup);
+  }, [status, storage]);
 
   if (status === "signed-out" || status === "error") {
     return <LoginScreen />;
@@ -67,6 +73,8 @@ function Shell() {
   if (status === "connecting") {
     return <ConnectingScreen />;
   }
+
+  const recoveryNeedsAttention = recoverySetup === false;
 
   return (
     <div className="app">
@@ -86,11 +94,11 @@ function Shell() {
           </button>
           <button
             type="button"
-            className={view === "recovery" ? "active" : ""}
+            className={`${view === "recovery" ? "active" : ""}${recoveryNeedsAttention ? " needs-attention" : ""}`}
             onClick={() => setView("recovery")}
             data-testid="nav-recovery"
           >
-            Recovery
+            {recoveryNeedsAttention ? "Set up recovery" : "Recovery"}
           </button>
         </nav>
         <button type="button" className="link" onClick={logout} data-testid="logout">
@@ -108,7 +116,9 @@ function Shell() {
             <RecoveryPanel />
           </div>
         )}
-        {view === "folders" && <FileManager />}
+        {view === "folders" && (
+          <FileManager onOpenRecovery={() => setView("recovery")} />
+        )}
       </main>
     </div>
   );

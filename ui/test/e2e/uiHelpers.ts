@@ -12,8 +12,11 @@ export async function loginViaUI(page: Page, user: E2eUser): Promise<void> {
 
 export async function createFolder(page: Page, name: string): Promise<string> {
   await page.getByTestId("nav-folders").click();
-  await page.getByTestId("new-folder-name").fill(name);
   await page.getByTestId("create-folder").click();
+  const renameInput = page.getByTestId("rename-folder-input");
+  await expect(renameInput).toBeVisible({ timeout: 20000 });
+  await renameInput.fill(name);
+  await renameInput.press("Enter");
   const item = page.locator('[data-testid="folder-item"]', { hasText: name });
   await expect(item).toBeVisible({ timeout: 20000 });
   const folderId = await item.getAttribute("data-folder-id");
@@ -26,14 +29,29 @@ export async function openFolderByName(page: Page, name: string): Promise<void> 
   await expect(page.getByTestId("folder-detail")).toBeVisible();
 }
 
-/** userB's side: paste a folderId shared by userA and join it — mirrors
- * `telecrypt-io storage folder join`. The folder only becomes usable (files
- * visible) locally once the room is actually joined. */
-export async function joinFolder(page: Page, folderId: string): Promise<void> {
+/** userB's side: accept a pending invite for the shared folder. */
+export async function joinFolder(
+  page: Page,
+  folderId: string,
+  folderName?: string,
+): Promise<void> {
   await page.getByTestId("nav-folders").click();
-  await page.getByTestId("join-folder-id").fill(folderId);
-  await page.getByTestId("join-folder").click();
-  await expect(page.locator(`[data-folder-id="${folderId}"]`)).toBeVisible({ timeout: 20000 });
+  const invite = page.locator('[data-testid="invite-item"]', {
+    has: page.locator(`[data-folder-id="${folderId}"]`),
+  });
+  if (await invite.isVisible({ timeout: 5000 }).catch(() => false)) {
+    await invite.getByTestId("accept-invite").click();
+  } else if (folderName) {
+    const byName = page.locator('[data-testid="invite-item"]', { hasText: folderName });
+    await expect(byName).toBeVisible({ timeout: 20000 });
+    await byName.getByTestId("accept-invite").click();
+  } else {
+    await expect(invite).toBeVisible({ timeout: 20000 });
+    await invite.getByTestId("accept-invite").click();
+  }
+  await expect(page.locator(`[data-testid="folder-item"][data-folder-id="${folderId}"]`)).toBeVisible({
+    timeout: 20000,
+  });
 }
 
 export async function uploadFile(

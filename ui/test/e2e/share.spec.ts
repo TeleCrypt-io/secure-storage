@@ -38,7 +38,7 @@ test("multi-participant share: userA and userB exchange a file", async ({ browse
     // userB: log in (separate context = separate device/crypto store), join
     // the folder by the ID userA's session exposed in the DOM, and upload.
     await loginViaUI(pageB, userB);
-    await joinFolder(pageB, folderId);
+    await joinFolder(pageB, folderId, "Team Folder");
     await openFolderByName(pageB, "Team Folder");
 
     const bobBytes = Buffer.from("hello from userB's editor upload\n".repeat(20));

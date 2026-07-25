@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 import * as core from "./lib/core";
@@ -15,8 +15,10 @@ vi.mock("./lib/core", async () => {
     ...actual,
     TeleCryptIOStorage: { create: vi.fn() },
     listFolders: vi.fn(),
+    listPendingInvites: vi.fn(),
     createFolder: vi.fn(),
     joinFolder: vi.fn(),
+    declineInvite: vi.fn(),
     listFiles: vi.fn(),
     listSubfolders: vi.fn(),
     createSubfolder: vi.fn(),
@@ -29,6 +31,8 @@ vi.mock("./lib/core", async () => {
     shareFolder: vi.fn(),
     unshareFolder: vi.fn(),
     listMembers: vi.fn(),
+    getFileDetails: vi.fn(),
+    getFolderDetails: vi.fn(),
     setupRecovery: vi.fn(),
     restoreRecovery: vi.fn(),
   };
@@ -61,11 +65,8 @@ async function loginAndReachFolders(initialFolders: Array<{ id: string; name: st
   const storage = fakeStorage();
   vi.mocked(auth.loginWithPassword).mockResolvedValue(SESSION);
   vi.mocked(core.TeleCryptIOStorage.create).mockResolvedValue(storage as never);
-  // Set BEFORE render, not after: FolderList's first fetch fires as soon as
-  // it mounts, and subsequent fetches only happen on a manual refresh action
-  // or its background poll interval — so a test that wants folders visible
-  // immediately must seed the mock before the initial fetch, not race it.
   vi.mocked(core.listFolders).mockResolvedValue(initialFolders);
+  vi.mocked(core.listPendingInvites).mockResolvedValue([]);
 
   const user = userEvent.setup();
   render(<App />);
@@ -124,29 +125,56 @@ describe("login", () => {
 });
 
 describe("folders", () => {
-  it("creates a folder via core.createFolder and re-lists it", async () => {
+  it("creates a folder via core.createFolder with untitled name and inline rename", async () => {
     await loginAndReachFolders();
     vi.mocked(core.listFiles).mockResolvedValue([]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.listMembers).mockResolvedValue([]);
-    vi.mocked(core.createFolder).mockResolvedValue({ id: "!new:localhost", name: "Docs" });
+    vi.mocked(core.getFolderDetails).mockResolvedValue({
+      name: "Untitled folder",
+      id: "!new:localhost",
+      createdAt: null,
+      memberCount: 1,
+    });
+    vi.mocked(core.createFolder).mockResolvedValue({ id: "!new:localhost", name: "Untitled folder" });
+    vi.mocked(core.renameFolder).mockResolvedValue({ id: "!new:localhost", name: "Docs" });
     vi.mocked(core.listFolders).mockResolvedValue([{ id: "!new:localhost", name: "Docs" }]);
 
     const user = userEvent.setup();
-    await user.type(screen.getByTestId("new-folder-name"), "Docs");
     await user.click(screen.getByTestId("create-folder"));
 
-    expect(core.createFolder).toHaveBeenCalledWith(expect.anything(), "Docs");
+    expect(core.createFolder).toHaveBeenCalledWith(expect.anything(), "Untitled folder");
+
+    const renameInput = await screen.findByTestId("rename-folder-input");
+    fireEvent.change(renameInput, { target: { value: "Docs" } });
+    fireEvent.keyDown(renameInput, { key: "Enter" });
+    await waitFor(() =>
+      expect(core.renameFolder).toHaveBeenCalledWith(expect.anything(), "!new:localhost", "Docs"),
+    );
     expect(await screen.findByTestId("folder-detail")).toHaveAttribute("data-folder-id", "!new:localhost");
   });
 
-  it("joins a folder via core.joinFolder", async () => {
-    await loginAndReachFolders();
-    vi.mocked(core.joinFolder).mockResolvedValue({ folderId: "!shared:localhost", joined: true });
+  it("accepts a pending invite via core.joinFolder", async () => {
+    const storage = fakeStorage();
+    vi.mocked(auth.loginWithPassword).mockResolvedValue(SESSION);
+    vi.mocked(core.TeleCryptIOStorage.create).mockResolvedValue(storage as never);
+    vi.mocked(core.listFolders).mockResolvedValue([]);
+    vi.mocked(core.listPendingInvites).mockResolvedValue([
+      { id: "!shared:localhost", name: "Shared" },
+    ]);
 
     const user = userEvent.setup();
-    await user.type(screen.getByTestId("join-folder-id"), "!shared:localhost");
-    await user.click(screen.getByTestId("join-folder"));
+    render(<App />);
+
+    await user.clear(screen.getByTestId("homeserver"));
+    await user.type(screen.getByTestId("homeserver"), SESSION.homeserver);
+    await user.type(screen.getByTestId("username"), "alice");
+    await user.type(screen.getByTestId("password"), "hunter2");
+    await user.click(screen.getByTestId("submit"));
+
+    await waitFor(() => expect(screen.getByTestId("current-user")).toHaveTextContent(SESSION.userId));
+    await screen.findByTestId("invite-list");
+    await user.click(screen.getByTestId("accept-invite"));
 
     await waitFor(() =>
       expect(core.joinFolder).toHaveBeenCalledWith(expect.anything(), "!shared:localhost"),
@@ -157,6 +185,12 @@ describe("folders", () => {
     vi.mocked(core.listFiles).mockResolvedValue([{ id: "$file1", name: "report.pdf" }]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.listMembers).mockResolvedValue([]);
+    vi.mocked(core.getFolderDetails).mockResolvedValue({
+      name: "Docs",
+      id: "!f:localhost",
+      createdAt: null,
+      memberCount: 1,
+    });
     await loginAndReachFolders([{ id: "!f:localhost", name: "Docs" }]);
 
     const user = userEvent.setup();
@@ -172,6 +206,12 @@ describe("file upload/download", () => {
     vi.mocked(core.listFiles).mockResolvedValue(initialFiles);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.listMembers).mockResolvedValue([]);
+    vi.mocked(core.getFolderDetails).mockResolvedValue({
+      name: "Docs",
+      id: "!f:localhost",
+      createdAt: null,
+      memberCount: 1,
+    });
     await loginAndReachFolders([{ id: "!f:localhost", name: "Docs" }]);
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Docs" }));
@@ -225,6 +265,12 @@ describe("sharing", () => {
     vi.mocked(core.listFiles).mockResolvedValue([]);
     vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.listMembers).mockResolvedValue([]);
+    vi.mocked(core.getFolderDetails).mockResolvedValue({
+      name: "Docs",
+      id: "!f:localhost",
+      createdAt: null,
+      memberCount: 1,
+    });
     await loginAndReachFolders([{ id: "!f:localhost", name: "Docs" }]);
 
     const user = userEvent.setup();
@@ -258,6 +304,12 @@ describe("sharing", () => {
     vi.mocked(core.listMembers).mockResolvedValue([
       { userId: "@bob:localhost", role: "viewer", membership: "join" },
     ]);
+    vi.mocked(core.getFolderDetails).mockResolvedValue({
+      name: "Docs",
+      id: "!f:localhost",
+      createdAt: null,
+      memberCount: 2,
+    });
     await loginAndReachFolders([{ id: "!f:localhost", name: "Docs" }]);
 
     const user = userEvent.setup();
