@@ -3,16 +3,13 @@ import "./App.css";
 import { StorageProvider, useStorage } from "./context/StorageContext";
 import { LoginScreen } from "./components/LoginScreen";
 import { RecoveryPanel } from "./components/RecoveryPanel";
-import { FolderList } from "./components/FolderList";
-import { FolderDetail } from "./components/FolderDetail";
-import type { FolderInfo } from "./lib/core";
+import { FileManager } from "./components/FileManager";
 
 type View = "folders" | "recovery";
 
 function Shell() {
   const { status, session, error, logout } = useStorage();
   const [view, setView] = useState<View>("folders");
-  const [openFolder, setOpenFolder] = useState<FolderInfo | null>(null);
 
   if (status === "signed-out" || status === "error") {
     return <LoginScreen />;
@@ -34,21 +31,21 @@ function Shell() {
   return (
     <div className="app">
       <header className="topbar">
-        <span className="user" data-testid="current-user">
+        <span className="brand">TeleCrypt Storage</span>
+        <span className="user muted" data-testid="current-user">
           {session?.userId}
         </span>
         <nav>
           <button
+            type="button"
             className={view === "folders" ? "active" : ""}
-            onClick={() => {
-              setOpenFolder(null);
-              setView("folders");
-            }}
+            onClick={() => setView("folders")}
             data-testid="nav-folders"
           >
-            Folders
+            Files
           </button>
           <button
+            type="button"
             className={view === "recovery" ? "active" : ""}
             onClick={() => setView("recovery")}
             data-testid="nav-recovery"
@@ -56,16 +53,17 @@ function Shell() {
             Recovery
           </button>
         </nav>
-        <button className="link" onClick={logout} data-testid="logout">
+        <button type="button" className="link" onClick={logout} data-testid="logout">
           Log out
         </button>
       </header>
-      <main>
-        {view === "recovery" && <RecoveryPanel />}
-        {view === "folders" && !openFolder && <FolderList onOpen={setOpenFolder} />}
-        {view === "folders" && openFolder && (
-          <FolderDetail folder={openFolder} onBack={() => setOpenFolder(null)} />
+      <main className="app-main">
+        {view === "recovery" && (
+          <div className="recovery-wrap">
+            <RecoveryPanel />
+          </div>
         )}
+        {view === "folders" && <FileManager />}
       </main>
     </div>
   );

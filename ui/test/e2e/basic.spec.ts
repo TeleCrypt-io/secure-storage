@@ -7,9 +7,8 @@ test("login, create a folder, and it appears in the list", async ({ page }) => {
   await loginViaUI(page, user);
 
   await createFolder(page, "My Documents");
-  // Re-affirm it is genuinely present after a real navigation-free re-render,
-  // not just transiently created.
-  await expect(page.getByText("My Documents")).toBeVisible();
+  // createFolder auto-opens the folder; confirm the file view mounted.
+  await expect(page.getByTestId("folder-detail")).toBeVisible();
 });
 
 test("upload a file, it appears, download it, bytes match", async ({ page }) => {

@@ -22,7 +22,7 @@ export async function createFolder(page: Page, name: string): Promise<string> {
 }
 
 export async function openFolderByName(page: Page, name: string): Promise<void> {
-  await page.getByText(name, { exact: true }).click();
+  await page.locator(".folder-list-btn", { hasText: name }).click();
   await expect(page.getByTestId("folder-detail")).toBeVisible();
 }
 

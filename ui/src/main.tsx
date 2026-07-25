@@ -5,6 +5,7 @@ import { Buffer } from "buffer";
 (globalThis as unknown as { Buffer: typeof Buffer }).Buffer = Buffer;
 
 import { createRoot } from "react-dom/client";
+import "./theme.css";
 import "./index.css";
 import App from "./App.tsx";
 

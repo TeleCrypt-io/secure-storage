@@ -32,7 +32,7 @@ test("multi-participant share: userA and userB exchange a file", async ({ browse
     await pageA.getByTestId("share-role").selectOption("editor");
     await pageA.getByTestId("share-submit").click();
     await expect(
-      pageA.locator('[data-testid="member-item"]', { hasText: userB.userId }),
+      pageA.locator(`[data-testid="member-item"][data-user-id="${userB.userId}"]`),
     ).toBeVisible({ timeout: 20000 });
 
     // userB: log in (separate context = separate device/crypto store), join

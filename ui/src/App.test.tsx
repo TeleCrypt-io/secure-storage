@@ -18,8 +18,14 @@ vi.mock("./lib/core", async () => {
     createFolder: vi.fn(),
     joinFolder: vi.fn(),
     listFiles: vi.fn(),
+    listSubfolders: vi.fn(),
+    createSubfolder: vi.fn(),
     uploadFile: vi.fn(),
     downloadFile: vi.fn(),
+    renameFile: vi.fn(),
+    renameFolder: vi.fn(),
+    deleteFile: vi.fn(),
+    deleteFolder: vi.fn(),
     shareFolder: vi.fn(),
     unshareFolder: vi.fn(),
     listMembers: vi.fn(),
@@ -120,6 +126,9 @@ describe("login", () => {
 describe("folders", () => {
   it("creates a folder via core.createFolder and re-lists it", async () => {
     await loginAndReachFolders();
+    vi.mocked(core.listFiles).mockResolvedValue([]);
+    vi.mocked(core.listSubfolders).mockResolvedValue([]);
+    vi.mocked(core.listMembers).mockResolvedValue([]);
     vi.mocked(core.createFolder).mockResolvedValue({ id: "!new:localhost", name: "Docs" });
     vi.mocked(core.listFolders).mockResolvedValue([{ id: "!new:localhost", name: "Docs" }]);
 
@@ -128,7 +137,7 @@ describe("folders", () => {
     await user.click(screen.getByTestId("create-folder"));
 
     expect(core.createFolder).toHaveBeenCalledWith(expect.anything(), "Docs");
-    expect(await screen.findByText("Docs")).toBeInTheDocument();
+    expect(await screen.findByTestId("folder-detail")).toHaveAttribute("data-folder-id", "!new:localhost");
   });
 
   it("joins a folder via core.joinFolder", async () => {
@@ -146,11 +155,12 @@ describe("folders", () => {
 
   it("opens a folder and lists its files via core.listFiles", async () => {
     vi.mocked(core.listFiles).mockResolvedValue([{ id: "$file1", name: "report.pdf" }]);
+    vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.listMembers).mockResolvedValue([]);
     await loginAndReachFolders([{ id: "!f:localhost", name: "Docs" }]);
 
     const user = userEvent.setup();
-    await user.click(screen.getByText("Docs"));
+    await user.click(screen.getByRole("button", { name: "Docs" }));
 
     expect(core.listFiles).toHaveBeenCalledWith(expect.anything(), "!f:localhost");
     expect(await screen.findByText("report.pdf")).toBeInTheDocument();
@@ -160,10 +170,11 @@ describe("folders", () => {
 describe("file upload/download", () => {
   async function openFolder(initialFiles: Array<{ id: string; name: string }> = []) {
     vi.mocked(core.listFiles).mockResolvedValue(initialFiles);
+    vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.listMembers).mockResolvedValue([]);
     await loginAndReachFolders([{ id: "!f:localhost", name: "Docs" }]);
     const user = userEvent.setup();
-    await user.click(screen.getByText("Docs"));
+    await user.click(screen.getByRole("button", { name: "Docs" }));
     if (initialFiles.length === 0) {
       await screen.findByTestId("no-files");
     } else {
@@ -212,11 +223,12 @@ describe("file upload/download", () => {
 describe("sharing", () => {
   it("invites a user via core.shareFolder and shows them in the member list", async () => {
     vi.mocked(core.listFiles).mockResolvedValue([]);
+    vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.listMembers).mockResolvedValue([]);
     await loginAndReachFolders([{ id: "!f:localhost", name: "Docs" }]);
 
     const user = userEvent.setup();
-    await user.click(screen.getByText("Docs"));
+    await user.click(screen.getByRole("button", { name: "Docs" }));
     await screen.findByTestId("no-files");
 
     vi.mocked(core.shareFolder).mockResolvedValue({
@@ -237,19 +249,20 @@ describe("sharing", () => {
       "@bob:localhost",
       "editor",
     );
-    expect(await screen.findByText(/@bob:localhost/)).toBeInTheDocument();
+    expect(await screen.findByTestId("member-item")).toHaveAttribute("data-user-id", "@bob:localhost");
   });
 
   it("removes a member via core.unshareFolder", async () => {
     vi.mocked(core.listFiles).mockResolvedValue([]);
+    vi.mocked(core.listSubfolders).mockResolvedValue([]);
     vi.mocked(core.listMembers).mockResolvedValue([
       { userId: "@bob:localhost", role: "viewer", membership: "join" },
     ]);
     await loginAndReachFolders([{ id: "!f:localhost", name: "Docs" }]);
 
     const user = userEvent.setup();
-    await user.click(screen.getByText("Docs"));
-    await screen.findByText(/@bob:localhost/);
+    await user.click(screen.getByRole("button", { name: "Docs" }));
+    await screen.findByTestId("member-item");
 
     vi.mocked(core.unshareFolder).mockResolvedValue({
       folderId: "!f:localhost",
