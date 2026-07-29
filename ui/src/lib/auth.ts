@@ -1,7 +1,7 @@
 /**
  * Session construction: login/register against Synapse directly. This is
  * session-bound and platform-specific the same way the CLI's own `login`/
- * `register` commands are (see docs/DECISIONS.md D3) — outside `core/`'s
+ * `register` commands are—outside `core/`'s
  * contract by construction, so it lives here rather than in lib/core.ts.
  * Mirrors src/cli/index.ts's `storage login`/`storage register` exactly:
  * same endpoints, same `m.login.password` / `m.login.dummy` shapes.

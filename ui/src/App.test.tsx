@@ -14,6 +14,7 @@ vi.mock("./lib/core", async () => {
     TeleCryptIOStorage: { create: vi.fn(), createFromOidc: vi.fn() },
     listFolders: vi.fn(),
     listPendingInvites: vi.fn(),
+    getMyFolderRole: vi.fn(),
     createFolder: vi.fn(),
     joinFolder: vi.fn(),
     declineInvite: vi.fn(),
@@ -110,6 +111,7 @@ async function openVault(
 beforeEach(() => {
   localStorage.clear();
   vi.clearAllMocks();
+  vi.mocked(core.getMyFolderRole).mockReturnValue("owner");
 });
 
 describe("formatElapsed", () => {
@@ -215,6 +217,15 @@ describe("vaults", () => {
 
     expect(core.listFiles).toHaveBeenCalledWith(expect.anything(), "!f:localhost");
     expect(await screen.findByText("report.pdf")).toBeInTheDocument();
+  });
+
+  it("hides destructive vault controls from non-owners", async () => {
+    vi.mocked(core.getMyFolderRole).mockReturnValue("viewer");
+    await loginAndReachVaults([{ id: "!shared:localhost", name: "Shared" }]);
+
+    const item = screen.getByTestId("vault-item");
+    expect(item).not.toContainElement(screen.queryByTestId("rename-vault"));
+    expect(item).not.toContainElement(screen.queryByTestId("delete-vault"));
   });
 
   it("accepts a pending invite via core.joinFolder", async () => {

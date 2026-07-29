@@ -23,6 +23,25 @@ test("create vault with rename and navigate up to vault list", async ({ page }) 
   await expect(page.getByTestId("select-vault-prompt")).toBeVisible();
 });
 
+test("rename and delete a vault from the sidebar", async ({ page }) => {
+  const user = await registerE2eUser("e2e_vault_delete");
+  await loginViaUI(page, user);
+  await createVault(page, "BeforeDelete");
+
+  const item = page.locator('[data-testid="vault-item"]', { hasText: "BeforeDelete" });
+  await item.getByTestId("rename-vault").click();
+  await page.getByTestId("rename-vault-input").fill("AfterRename");
+  await page.getByTestId("rename-vault-input").press("Enter");
+  await expect(page.locator('[data-testid="vault-item"]', { hasText: "AfterRename" })).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page
+    .locator('[data-testid="vault-item"]', { hasText: "AfterRename" })
+    .getByTestId("delete-vault")
+    .click();
+  await expect(page.getByTestId("select-vault-prompt")).toBeVisible({ timeout: 20_000 });
+});
+
 test("new folder button creates untitled subfolder with inline rename", async ({ page }) => {
   const user = await registerE2eUser("e2e_new_folder");
   await loginViaUI(page, user);

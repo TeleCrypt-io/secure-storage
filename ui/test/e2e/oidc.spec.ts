@@ -2,8 +2,7 @@ import { test, expect } from "@playwright/test";
 import { registerE2eUser } from "./testUsers";
 import { createFolder } from "./uiHelpers";
 
-// Real authorization-code + PKCE flow against the local disposable MAS (see
-// throwaway_synapse/up.sh, docs/DECISIONS.md D6): the UI redirects to MAS's
+// Real authorization-code + PKCE flow against the local disposable MAS: the UI redirects to MAS's
 // actual login + consent pages (driven here for real, no mocks), MAS
 // redirects back with ?code&state, the UI exchanges it and lands logged in.
 // Mirrors the CLI's device-code flow tested in test/functional/oidc.test.ts,

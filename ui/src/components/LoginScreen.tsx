@@ -9,7 +9,8 @@ export function LoginScreen() {
 
   // Lock homeserver to production value if configured, otherwise use default
   const lockedHomeserver =
-    import.meta.env.VITE_HOMESERVER ?? (import.meta.env.PROD ? "https://telecrypt.io" : undefined);
+    import.meta.env.VITE_HOMESERVER ??
+    (import.meta.env.PROD ? "https://backend.telecrypt.io" : undefined);
   const [homeserver, setHomeserver] = useState(lockedHomeserver || DEFAULT_HOMESERVER);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");

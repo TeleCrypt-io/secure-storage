@@ -5,7 +5,7 @@
  * has no reach-through dependency on the root test/ tree's module resolution.
  *
  * The throwaway stack's Synapse delegates auth to a local MAS (MSC3861,
- * compatibility mode — see throwaway_synapse/up.sh and docs/DECISIONS.md D6),
+ * compatibility mode),
  * so plain `POST /_matrix/client/v3/register` is refused ("Registration has
  * been disabled") — account creation goes through `mas-cli manage
  * register-user` (shelled out via `podman exec`, same as the root harness).

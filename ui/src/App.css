@@ -328,6 +328,8 @@
 }
 
 .folder-list li {
+  display: flex;
+  flex-direction: column;
   margin-bottom: 2px;
 }
 
@@ -349,6 +351,12 @@
 .folder-list-btn.active {
   background: var(--active);
   font-weight: 500;
+}
+
+.vault-actions {
+  display: flex;
+  gap: 4px;
+  padding: 0 10px 6px;
 }
 
 .folder-main {

@@ -1,9 +1,8 @@
 # TeleCrypt.io Storage — web UI
 
 A React + Vite + TypeScript app that is a **thin adapter over `../src/core/`** — it builds a
-browser session, calls `core.*` directly, and renders the typed results. No E2EE/sharing/
-recovery logic lives here; see `../docs/UI_SPEC.md` for the full spec and `../STATUS.md` (Phase
-9) for what was built and how it was verified.
+browser session, calls `core.*` directly, and renders the typed results. No E2EE, sharing, or
+recovery logic is reimplemented here.
 
 ## Run it
 

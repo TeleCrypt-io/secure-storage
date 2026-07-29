@@ -2,7 +2,7 @@
  * OIDC/MAS login for the web UI: authorization-code + PKCE. Thin browser
  * adapter over the shared `src/core/oidc.ts` protocol calls (discovery, DCR,
  * PKCE URL building, token exchange) — mirrors what src/cli/oidc.ts does for
- * the CLI's device-code flow. See docs/OAUTH_SPEC.md Part D.
+ * the CLI's device-code flow.
  *
  * PKCE code_verifier + state are persisted by matrix-js-sdk/oidc-client-ts
  * itself, in window.sessionStorage (`mx_oidc_`-prefixed keys) — this module

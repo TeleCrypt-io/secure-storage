@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 // E2E: real disposable Synapse (podman), real crypto, real browser — no
-// mocks. See docs/UI_SPEC.md. Starts both the Vite dev server and Synapse
+// mocks. Starts both the Vite dev server and Synapse
 // itself so `npm run e2e` is a single self-contained command.
 export default defineConfig({
   testDir: "./test/e2e",

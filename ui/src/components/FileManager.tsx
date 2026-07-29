@@ -23,6 +23,7 @@ export function FileManager({ onOpenRecovery }: { onOpenRecovery?: () => void })
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [rootFolder, setRootFolder] = useState<FolderInfo | null>(null);
+  const [ownedFolderIds, setOwnedFolderIds] = useState<Set<string>>(new Set());
   const [subPath, setSubPath] = useState<FolderInfo[]>([]);
   const [sidebarRenaming, setSidebarRenaming] = useState<{ id: string; name: string } | null>(
     null,
@@ -39,6 +40,13 @@ export function FileManager({ onOpenRecovery }: { onOpenRecovery?: () => void })
       ]);
       setFolders(result);
       setInvites(pending);
+      setOwnedFolderIds(
+        new Set(
+          result
+            .filter((folder) => core.getMyFolderRole(storage, folder.id) === "owner")
+            .map((folder) => folder.id),
+        ),
+      );
     } catch (err) {
       setError((err as Error).message);
     }
@@ -122,6 +130,7 @@ export function FileManager({ onOpenRecovery }: { onOpenRecovery?: () => void })
       const name = uniqueUntitledName(folders ?? []);
       const created = await core.createFolder(storage!, name);
       setFolders((prev) => [...(prev ?? []), created]);
+      setOwnedFolderIds((prev) => new Set(prev).add(created.id));
       selectRoot(created);
       setSidebarRenaming({ id: created.id, name: created.name });
       void refreshFolders();
@@ -149,6 +158,25 @@ export function FileManager({ onOpenRecovery }: { onOpenRecovery?: () => void })
     } finally {
       setBusy(false);
       setSidebarRenaming(null);
+    }
+  }
+
+  async function handleDeleteVault(folder: FolderInfo) {
+    if (!confirm(`Delete vault "${folder.name}" and everything inside it?`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await core.deleteFolder(storage!, folder.id);
+      if (rootFolder?.id === folder.id) {
+        setRootFolder(null);
+        setSubPath([]);
+        setSelection(null);
+      }
+      await refreshFolders();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -270,6 +298,34 @@ export function FileManager({ onOpenRecovery }: { onOpenRecovery?: () => void })
                   >
                     {f.name}
                   </button>
+                )}
+                {ownedFolderIds.has(f.id) && sidebarRenaming?.id !== f.id && (
+                  <div className="vault-actions">
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={busy}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSidebarRenaming({ id: f.id, name: f.name });
+                      }}
+                      data-testid="rename-vault"
+                    >
+                      Rename
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-danger"
+                      disabled={busy}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleDeleteVault(f);
+                      }}
+                      data-testid="delete-vault"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 )}
               </li>
             ))}
