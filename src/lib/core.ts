@@ -8,4 +8,3 @@
  */
 export * from "@telecrypt-io/storage/core";
 export { TeleCryptIOStorage } from "@telecrypt-io/storage";
-export type { CreateTeleCryptIOStorageOptions } from "@telecrypt-io/storage";
