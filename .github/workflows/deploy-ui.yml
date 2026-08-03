@@ -1,13 +1,8 @@
-name: Deploy UI to GitHub Pages
+name: Deploy storage site to GitHub Pages
 
 on:
   push:
-    branches: ["main"]
-    paths:
-      - "ui/**"
-      - "src/**"
-      - ".github/workflows/deploy-ui.yml"
-  workflow_dispatch:
+    tags: ["storage-web-v*"]
 
 permissions:
   contents: read
@@ -30,17 +25,11 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      # The ui build imports the parent library source (../src/*.ts), which
-      # depends on the ROOT node_modules (matrix-js-sdk, oidc-client-ts, …).
-      # Install both the root and ui dependency trees before building.
-      - name: Install root dependencies
+      - name: Install exact dependencies
         run: npm ci
 
-      - name: Install UI dependencies
-        run: cd ui && npm ci
-
       - name: Build
-        run: cd ui && npm run build
+        run: npm run build
         env:
           VITE_HOMESERVER: https://backend.telecrypt.io
 
@@ -50,7 +39,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5.0.0
         with:
-          path: "ui/dist"
+          path: "dist"
 
       - name: Deploy to GitHub Pages
         id: deployment

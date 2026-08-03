@@ -1,9 +1,30 @@
-node_modules/
-dist/
+# Logs
+logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Playwright output (traces/videos on failed prod-smoke runs)
-test-results/
+node_modules
+dist
+dist-ssr
+*.local
 
-# Disposable test Synapse state — never commit (contains generated signing keys)
-throwaway_synapse/data/
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

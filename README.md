@@ -1,92 +1,29 @@
-# TeleCrypt.io Storage
+# storage.telecrypt.io
 
-[![npm](https://img.shields.io/npm/v/@telecrypt-io/storage)](https://www.npmjs.com/package/@telecrypt-io/storage)
+The static React/Vite site served at [storage.telecrypt.io](https://storage.telecrypt.io).
+It uses the exact published `@telecrypt-io/storage@0.1.3` browser library; storage protocol,
+cryptography, and the command-line client deliberately live in their own repositories.
 
-End-to-end encrypted file storage and sharing, built on Matrix.
+## Source boundaries
 
-Files are encrypted on the client before upload. The server stores only opaque ciphertext and
-never holds the decryption keys. Shared folders let multiple people add and read files, and a
-Recovery Key restores your files on a new device — even if you lose the original.
+- [`telecrypt-io-storage-lib`](https://github.com/TeleCrypt-io/telecrypt-io-storage-lib) owns the library source and future package releases.
+- [`storage-cli`](https://github.com/TeleCrypt-io/storage-cli) owns the CLI migration source.
+- This repository owns only the static website, its UI tests, and its GitHub Pages deployment.
 
-**Status:** published and usable — library, CLI, and a React web UI.
+## Development and checks
 
-## Install
-
-```bash
-npm install @telecrypt-io/storage
+```
+npm ci
+npm run dev       # http://localhost:5173
+npm run lint
+npm test          # component/wiring tests; no browser Harness execution in CI
+npm run build
 ```
 
-This gives you both the `TeleCryptIOStorage` library and the `telecrypt-io` CLI.
+Browser acceptance tooling is operator-local Harness work, never a GitHub Actions job.
 
-## Quick start
+## Releases and deployment
 
-**Library:**
-
-```ts
-import { TeleCryptIOStorage } from "@telecrypt-io/storage";
-import * as core from "@telecrypt-io/storage/core";
-
-const storage = await TeleCryptIOStorage.create({
-  baseUrl, userId, accessToken, deviceId,
-});
-const folder = await core.createFolder(storage, "Photos");
-await core.uploadFile(storage, folder.id, "cat.jpg", bytes, "image/jpeg");
-```
-
-**CLI:**
-
-```bash
-telecrypt-io storage login --homeserver https://your.server --user alice --password ...
-telecrypt-io storage folder create Photos
-telecrypt-io storage file upload <folderId> ./cat.jpg
-telecrypt-io storage folder share <folderId> @bob:your.server --role editor
-telecrypt-io storage recovery setup     # prints your Recovery Key — save it
-```
-
-**Web UI:** a React app lives in [`ui/`](./ui) (`cd ui && npm install && npm run dev`).
-
-## How it works
-
-Built on [MSC3089](https://github.com/matrix-org/matrix-spec-proposals/pull/3089), which models
-a file tree using Matrix primitives:
-
-| File-system concept | Matrix concept |
-|---|---|
-| Folder | A Space (room marked as a file tree) |
-| Subfolder | A child Space |
-| File | An event pointing at encrypted uploaded content |
-| Version | A newer event superseding the old |
-| Sharing | Room invitation |
-| Permissions | Power levels |
-
-Encryption uses the same scheme as Matrix attachments (AES-CTR with a per-file key, keys
-distributed via the room's Megolm session). Requires no server-side changes — it runs against
-stock Synapse.
-
-## Development
-
-```bash
-npm install
-npm run synapse:up     # disposable local Synapse for tests
-npm test
-npm run synapse:down
-```
-
-Tests run against a real local Synapse in podman, never against a production server.
-
-See [CLI.md](./CLI.md) for command reference and [RELEASING.md](./RELEASING.md) for release
-instructions.
-
-## Licence
-
-[Business Source License 1.1](./LICENSE). Non-commercial use is permitted; converts to
-Apache License 2.0 on 2030-07-20.
-
-For commercial licensing, contact TeleCrypt.io.
-
-## Third-party code
-
-- [`matrix-js-sdk`](https://github.com/matrix-org/matrix-js-sdk) — Apache-2.0 — dependency
-- [`matrix-files-sdk`](https://github.com/matrix-org/matrix-files-sdk) — Apache-2.0 — reference
-- [`files-sdk-demo`](https://github.com/vector-im/files-sdk-demo) — AGPL-3.0 — **not used**;
-  incompatible with this project's licence
+Pushes and pull requests to `main` only verify the source. GitHub Pages deploys only when an
+immutable `storage-web-v*` release tag is pushed. A deployment therefore always identifies the
+exact source release that produced it; it never builds from a branch.

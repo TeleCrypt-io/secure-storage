@@ -13,9 +13,8 @@ export default defineConfig({
     global: "globalThis",
   },
   resolve: {
-    // The UI imports the parent library source (../src/*), which resolves
-    // matrix-js-sdk from the ROOT node_modules, while the UI's own imports
-    // resolve it from ui/node_modules. Without dedupe, Vite bundles BOTH copies
+    // Both the web app and the exact @telecrypt-io/storage dependency import
+    // matrix-js-sdk. Without dedupe, Vite can bundle BOTH copies
     // and matrix-js-sdk's "single entrypoint" guard throws at runtime
     // ("Multiple matrix-js-sdk entrypoints detected!"), rendering a blank page.
     // This only surfaces in the production build, not the dev server — so the
