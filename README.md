@@ -6,7 +6,7 @@ cryptography, and the command-line client deliberately live in their own reposit
 
 ## Source boundaries
 
-- [`telecrypt-io-storage-lib`](https://github.com/TeleCrypt-io/telecrypt-io-storage-lib) owns the library source and future package releases.
+- [`storage-sdk`](https://github.com/TeleCrypt-io/storage-sdk) owns the library source and future package releases.
 - [`storage-cli`](https://github.com/TeleCrypt-io/storage-cli) owns the CLI migration source.
 - This repository owns only the static website, its UI tests, and its GitHub Pages deployment.
 
